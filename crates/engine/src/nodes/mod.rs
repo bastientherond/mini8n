@@ -2,15 +2,17 @@
 //! le Parquet produit par ses prédécesseurs) et retourne une table.
 
 mod aggregate;
-mod http;
+pub mod http;
 mod merge;
 mod sources;
 mod transform;
+pub mod triggers;
 
 use arrow::array::RecordBatch;
 use serde_json::{Map, Value as Json};
 
 use crate::error::{Result, fail};
+use crate::host::Host;
 use crate::workflow::Node;
 
 /// Accès typé aux paramètres d'un nœud.
@@ -65,7 +67,11 @@ pub fn split_list(s: &str) -> Vec<String> {
 }
 
 /// Exécute un nœud. `inputs[i]` correspond à l'entrée `i` du nœud.
-pub async fn execute(node: &Node, inputs: Vec<RecordBatch>) -> Result<RecordBatch> {
+pub async fn execute(
+    node: &Node,
+    inputs: Vec<RecordBatch>,
+    host: &dyn Host,
+) -> Result<RecordBatch> {
     let p = Params(&node.params);
     let mut inputs = inputs.into_iter();
     let mut input = || {
@@ -76,7 +82,7 @@ pub async fn execute(node: &Node, inputs: Vec<RecordBatch>) -> Result<RecordBatc
     match node.kind.as_str() {
         "manual" => sources::manual(&p),
         "csv" => sources::csv(&p),
-        "http" => http::request(&p).await,
+        "http" => http::request(&p, host).await,
         "filter" => transform::filter(&p, input()?),
         "formula" => transform::formula(&p, input()?),
         "select" => transform::select(&p, input()?),
@@ -90,6 +96,14 @@ pub async fn execute(node: &Node, inputs: Vec<RecordBatch>) -> Result<RecordBatc
             let b = input()?;
             merge::merge(&p, a, b)
         }
+        "subworkflow" => {
+            let id = p.str("workflow");
+            if id.trim().is_empty() {
+                return fail("Choisissez le workflow à exécuter");
+            }
+            host.call_workflow(id.trim(), input()?).await
+        }
+        kind if triggers::is_trigger(kind) => triggers::test_output(node, host).await,
         other => fail(format!("Type de nœud inconnu : {other}")),
     }
 }

@@ -7,9 +7,11 @@ use serde_json::{Value as Json, json};
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Category {
+    Trigger,
     Source,
     Transform,
     Combine,
+    Flow,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,6 +28,10 @@ pub enum ParamType {
     Number,
     Boolean,
     Select,
+    /// Jeton secret d'URL publique (webhook, formulaire), généré par l'interface.
+    Token,
+    /// Identifiant d'un workflow du workspace.
+    Workflow,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,6 +97,122 @@ pub fn all() -> Vec<NodeSpec> {
     use Category::*;
     use ParamType as P;
     vec![
+        // ------------------------------------------------------------------ déclencheurs
+        NodeSpec {
+            kind: "trigger_manual",
+            label: "Déclenchement manuel",
+            category: Trigger,
+            description: "Démarre le workflow avec le bouton Exécuter (éditeur ou serveur).",
+            icon: "mouse-pointer-click",
+            inputs: vec![],
+            params: vec![],
+        },
+        NodeSpec {
+            kind: "trigger_schedule",
+            label: "Planification",
+            category: Trigger,
+            description: "Démarre le workflow à intervalle régulier ou à heure fixe (workflow actif).",
+            icon: "clock",
+            inputs: vec![],
+            params: vec![
+                param("mode", "Fréquence", P::Select, json!("intervalle"))
+                    .options(&["intervalle", "quotidien", "hebdomadaire", "cron"]),
+                param("every", "Toutes les … minutes", P::Number, json!(60))
+                    .help("Mode intervalle : 1 minute minimum."),
+                param("time", "Heure", P::String, json!("08:00"))
+                    .placeholder("HH:MM")
+                    .help("Modes quotidien et hebdomadaire."),
+                param("days", "Jours", P::String, json!("lun, mar, mer, jeu, ven"))
+                    .placeholder("lun, mer, ven")
+                    .help("Mode hebdomadaire : lun, mar, mer, jeu, ven, sam, dim."),
+                param("cron", "Expression cron", P::String, json!("*/15 * * * *"))
+                    .placeholder("minute heure jour mois jour-semaine")
+                    .help("Mode cron (5 champs) : *, listes 1,2, plages 1-5, pas */15. Jour de semaine : 0 = dimanche."),
+                param("timezone", "Fuseau horaire", P::String, json!("Europe/Paris"))
+                    .placeholder("Europe/Paris"),
+            ],
+        },
+        NodeSpec {
+            kind: "trigger_webhook",
+            label: "Webhook",
+            category: Trigger,
+            description: "Démarre le workflow à la réception d'une requête HTTP sur une URL secrète.",
+            icon: "webhook",
+            inputs: vec![],
+            params: vec![
+                param("token", "URL du webhook", P::Token, json!(""))
+                    .help("L'URL contient un jeton secret : ne la partagez qu'avec l'émetteur. Le workflow doit être actif."),
+                param("method", "Méthode acceptée", P::Select, json!("POST"))
+                    .options(&["POST", "GET", "PUT", "toutes"]),
+                param("secret", "Secret (en-tête X-Mini8n-Secret)", P::String, json!(""))
+                    .placeholder("facultatif")
+                    .help("Si renseigné, les requêtes sans l'en-tête X-Mini8n-Secret correspondant sont refusées."),
+                param("respond", "Réponse", P::Select, json!("immédiate"))
+                    .options(&["immédiate", "résultat du workflow"])
+                    .help("« Résultat du workflow » attend la fin de l'exécution (30 s max.) et renvoie la sortie en JSON."),
+                param("test_data", "Données de test", P::Json, json!("{\n  \"exemple\": \"valeur\",\n  \"nombre\": 42\n}"))
+                    .help("Utilisées quand vous exécutez le workflow depuis l'éditeur."),
+            ],
+        },
+        NodeSpec {
+            kind: "trigger_form",
+            label: "Formulaire",
+            category: Trigger,
+            description: "Publie un formulaire ; chaque envoi démarre le workflow.",
+            icon: "clipboard-list",
+            inputs: vec![],
+            params: vec![
+                param("token", "Lien du formulaire", P::Token, json!(""))
+                    .help("Page publique (sans compte). Le workflow doit être actif."),
+                param("title", "Titre", P::String, json!("Nous contacter")),
+                param("description", "Description", P::Text, json!("")),
+                param("fields", "Champs", P::Text, json!("Nom | texte | requis\nE-mail | email | requis\nMessage | texte long"))
+                    .help("Un champ par ligne : « Libellé | type | requis ». Types : texte, texte long, email, nombre, date, case."),
+                param("confirmation", "Message de confirmation", P::String, json!("Merci, votre réponse a bien été envoyée.")),
+                param("test_data", "Données de test", P::Json, json!(""))
+                    .help("Vide : une réponse vide est générée à partir des champs."),
+            ],
+        },
+        NodeSpec {
+            kind: "trigger_poll",
+            label: "Surveillance d'API",
+            category: Trigger,
+            description: "Interroge une API JSON régulièrement et démarre le workflow avec les nouveaux éléments.",
+            icon: "radar",
+            inputs: vec![],
+            params: vec![
+                param("url", "URL", P::String, json!("https://jsonplaceholder.typicode.com/posts"))
+                    .placeholder("https://api.exemple.com/items"),
+                param("headers", "En-têtes", P::Text, json!(""))
+                    .placeholder("Authorization: Bearer …"),
+                param("items_path", "Chemin des éléments", P::String, json!(""))
+                    .placeholder("data.items"),
+                param("key", "Colonne identifiante", P::String, json!("id"))
+                    .help("Sert à reconnaître les éléments déjà vus. Vide : l'élément entier est comparé."),
+                param("every", "Toutes les … minutes", P::Number, json!(15))
+                    .help("1 minute minimum. Au premier passage, les éléments existants sont mémorisés sans déclencher."),
+            ],
+        },
+        NodeSpec {
+            kind: "trigger_workflow",
+            label: "Appelé par un workflow",
+            category: Trigger,
+            description: "Démarre quand un autre workflow l'exécute (nœud « Exécuter un workflow »).",
+            icon: "corner-down-right",
+            inputs: vec![],
+            params: vec![param("test_data", "Données de test", P::Json, json!("[\n  {\"id\": 1, \"valeur\": \"a\"}\n]"))
+                .help("Utilisées quand vous exécutez ce workflow depuis l'éditeur.")],
+        },
+        NodeSpec {
+            kind: "trigger_error",
+            label: "Sur erreur",
+            category: Trigger,
+            description: "Démarre quand une exécution automatique d'un autre workflow du workspace échoue.",
+            icon: "triangle-alert",
+            inputs: vec![],
+            params: vec![],
+        },
+        // ------------------------------------------------------------------ sources
         NodeSpec {
             kind: "manual",
             label: "Données JSON",
@@ -256,6 +378,17 @@ pub fn all() -> Vec<NodeSpec> {
                 param("right_key", "Clé de B", P::String, json!(""))
                     .placeholder("identique à A si vide"),
             ],
+        },
+        // ------------------------------------------------------------------ flux
+        NodeSpec {
+            kind: "subworkflow",
+            label: "Exécuter un workflow",
+            category: Flow,
+            description: "Envoie la table à un autre workflow (déclencheur « Appelé par un workflow ») et récupère sa sortie.",
+            icon: "workflow",
+            inputs: vec!["Entrée"],
+            params: vec![param("workflow", "Workflow", P::Workflow, json!(""))
+                .help("Workflow du même workspace. Sa sortie est son dernier nœud terminal exécuté avec succès.")],
         },
     ]
 }

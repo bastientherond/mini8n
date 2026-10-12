@@ -254,3 +254,137 @@ fn csv_export_neutralizes_formulas() {
         "les nombres négatifs restent intacts : {csv}"
     );
 }
+
+mod triggers {
+    use super::*;
+    use mini8n_engine::data::json_to_batch;
+    use mini8n_engine::{BoxFuture, Host, RunOptions, TriggerEvent, run_with};
+
+    fn two_triggers() -> Workflow {
+        workflow(json!({
+            "nodes": [
+                {"id": "hook", "kind": "trigger_webhook", "params": {"test_data": "[{\"montant\": 10}, {\"montant\": 30}]"}},
+                {"id": "cron", "kind": "trigger_schedule", "params": {}},
+                {"id": "gros", "kind": "filter", "params": {"condition": "montant > 20"}},
+                {"id": "trace", "kind": "limit", "params": {"count": 1}}
+            ],
+            "edges": [{"source": "hook", "target": "gros"}, {"source": "cron", "target": "trace"}]
+        }))
+    }
+
+    #[test]
+    fn manual_run_uses_test_data_for_every_trigger() {
+        let report = block_on(run(&two_triggers(), None));
+        assert!(report.ok, "{report:?}");
+        assert_eq!(rows(&report, "gros"), json!([{"montant": 30}]));
+        assert_eq!(report.results["trace"].rows, 1);
+    }
+
+    #[test]
+    fn fired_trigger_only_runs_its_branch() {
+        let event = TriggerEvent {
+            node_id: "hook".into(),
+            data: json_to_batch(&json!([{"montant": 99}, {"montant": 1}])).unwrap(),
+        };
+        let report = block_on(run_with(
+            &two_triggers(),
+            RunOptions {
+                target: None,
+                trigger: Some(event),
+            },
+            &mini8n_engine::NoHost,
+        ));
+        assert!(report.ok, "un déclencheur ignoré n'est pas une erreur");
+        assert_eq!(rows(&report, "gros"), json!([{"montant": 99}]));
+        assert_eq!(report.results["cron"].status, Status::Skipped);
+        assert_eq!(report.results["trace"].status, Status::Skipped);
+        assert_eq!(report.output.as_deref(), Some("gros"));
+        assert_eq!(report.output_batch().unwrap().unwrap().num_rows(), 1);
+    }
+
+    #[test]
+    fn unknown_trigger_is_rejected() {
+        let event = TriggerEvent {
+            node_id: "gros".into(),
+            data: json_to_batch(&json!([])).unwrap(),
+        };
+        let report = block_on(run_with(
+            &two_triggers(),
+            RunOptions {
+                target: None,
+                trigger: Some(event),
+            },
+            &mini8n_engine::NoHost,
+        ));
+        assert!(!report.ok);
+        assert!(report.error.unwrap().contains("Déclencheur introuvable"));
+    }
+
+    /// Hôte de test : le « sous-workflow » ajoute une colonne.
+    struct Doubler;
+    impl Host for Doubler {
+        fn call_workflow<'a>(
+            &'a self,
+            id: &'a str,
+            input: arrow::array::RecordBatch,
+        ) -> BoxFuture<'a, mini8n_engine::Result<arrow::array::RecordBatch>> {
+            Box::pin(async move {
+                assert_eq!(id, "wf-enfant");
+                let sub = workflow(json!({
+                    "nodes": [
+                        {"id": "in", "kind": "trigger_workflow"},
+                        {"id": "x2", "kind": "formula", "params": {"column": "double", "expression": "montant * 2"}}
+                    ],
+                    "edges": [{"source": "in", "target": "x2"}]
+                }));
+                let report = run_with(
+                    &sub,
+                    RunOptions {
+                        target: None,
+                        trigger: Some(TriggerEvent {
+                            node_id: "in".into(),
+                            data: input,
+                        }),
+                    },
+                    &mini8n_engine::NoHost,
+                )
+                .await;
+                Ok(report.output_batch()?.expect("sortie"))
+            })
+        }
+    }
+
+    #[test]
+    fn subworkflow_returns_child_output() {
+        let wf = workflow(json!({
+            "nodes": [
+                {"id": "src", "kind": "manual", "params": {"data": "[{\"montant\": 21}]"}},
+                {"id": "call", "kind": "subworkflow", "params": {"workflow": "wf-enfant"}}
+            ],
+            "edges": [{"source": "src", "target": "call"}]
+        }));
+        let report = block_on(run_with(&wf, RunOptions::default(), &Doubler));
+        assert_eq!(
+            rows(&report, "call"),
+            json!([{"montant": 21, "double": 42}])
+        );
+        // Sans hôte, l'appel échoue proprement.
+        let report = block_on(run(&wf, None));
+        assert_eq!(report.results["call"].status, Status::Error);
+    }
+
+    #[test]
+    fn form_trigger_test_output_follows_fields() {
+        let wf = workflow(json!({
+            "nodes": [{"id": "f", "kind": "trigger_form", "params": {"fields": "Nom | texte | requis\nÂge | nombre"}}],
+            "edges": []
+        }));
+        let report = block_on(run(&wf, None));
+        let cols: Vec<_> = report.results["f"]
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(cols, vec!["nom", "age", "soumis_le"]);
+    }
+}

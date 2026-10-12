@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod data;
 pub mod error;
 pub mod expr;
+pub mod host;
 pub mod nodes;
 pub mod value;
 pub mod workflow;
@@ -14,5 +15,10 @@ pub mod workflow;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
+/// Arrow, réexporté pour les hôtes (serveur).
+pub use arrow;
 pub use error::{EngineError, Result};
-pub use workflow::{Edge, Node, NodeResult, RunReport, Status, Workflow, run};
+pub use host::{BoxFuture, Host, HttpRequest, HttpResponse, NoHost};
+pub use workflow::{
+    Edge, Node, NodeResult, RunOptions, RunReport, Status, TriggerEvent, Workflow, run, run_with,
+};

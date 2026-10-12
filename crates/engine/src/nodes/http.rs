@@ -1,11 +1,14 @@
 use arrow::array::RecordBatch;
 
 use super::Params;
-use crate::error::Result;
+use crate::data::json_to_batch;
+use crate::error::{Result, fail};
+use crate::host::{Host, HttpRequest};
+
+pub const MAX_RESPONSE_BYTES: usize = 50 * 1024 * 1024;
 
 /// Suit un chemin `a.b.0.c` dans un document JSON.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-fn navigate(doc: serde_json::Value, path: &str) -> Result<serde_json::Value> {
+pub fn navigate(doc: serde_json::Value, path: &str) -> Result<serde_json::Value> {
     let mut cur = doc;
     for part in path.split('.').map(str::trim).filter(|s| !s.is_empty()) {
         cur = match cur {
@@ -26,9 +29,80 @@ fn navigate(doc: serde_json::Value, path: &str) -> Result<serde_json::Value> {
     Ok(cur)
 }
 
+/// Valide les paramètres et construit la requête (commune au navigateur et au serveur).
+pub fn build_request(p: &Params) -> Result<HttpRequest> {
+    let url = p.str("url").trim().to_string();
+    if url.is_empty() {
+        return fail("URL requise");
+    }
+    // Uniquement des URL absolues http(s) : pas de data:, blob:, javascript:, file:, ni de chemin relatif.
+    let lower = url.to_ascii_lowercase();
+    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+        return fail("L'URL doit commencer par https:// (ou http://)");
+    }
+    let method = p.str_or("method", "GET").to_uppercase();
+    if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
+        return fail(format!("Méthode non autorisée : {method}"));
+    }
+    let mut headers = Vec::new();
+    let mut has_content_type = false;
+    for line in p.str("headers").lines() {
+        if let Some((k, v)) = line.split_once(':') {
+            let k = k.trim();
+            if k.is_empty() {
+                continue;
+            }
+            if k.contains(|c: char| c.is_whitespace() || c.is_control()) || v.contains(['\r', '\n'])
+            {
+                return fail(format!("En-tête invalide : {k}"));
+            }
+            has_content_type |= k.eq_ignore_ascii_case("content-type");
+            headers.push((k.to_string(), v.trim().to_string()));
+        }
+    }
+    let body = p.str("body");
+    let body = if !body.trim().is_empty() && method != "GET" {
+        if !has_content_type && serde_json::from_str::<serde_json::Value>(&body).is_ok() {
+            headers.push(("Content-Type".into(), "application/json".into()));
+        }
+        Some(body)
+    } else {
+        None
+    };
+    Ok(HttpRequest {
+        method,
+        url,
+        headers,
+        body,
+    })
+}
+
+/// Convertit une réponse en table (JSON → lignes, sinon une ligne `status` / `body`).
+pub fn response_to_batch(status: u16, text: String, items_path: &str) -> Result<RecordBatch> {
+    if text.len() > MAX_RESPONSE_BYTES {
+        return fail("Réponse trop volumineuse (50 Mo max.)");
+    }
+    if !(200..300).contains(&status) {
+        let snippet: String = text.chars().take(200).collect();
+        return fail(format!("HTTP {status} : {snippet}"));
+    }
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(doc) => json_to_batch(&navigate(doc, items_path)?),
+        Err(_) => json_to_batch(&serde_json::json!({ "status": status, "body": text })),
+    }
+}
+
+/// Exécute la requête décrite par les paramètres et renvoie la table obtenue.
+pub async fn request(p: &Params<'_>, host: &dyn Host) -> Result<RecordBatch> {
+    let req = build_request(p)?;
+    let (status, text) = send(req, host).await?;
+    response_to_batch(status, text, &p.str("items_path"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn request(_p: &Params<'_>) -> Result<RecordBatch> {
-    crate::error::fail("Le nœud HTTP n'est disponible que dans le navigateur (WebAssembly)")
+async fn send(req: HttpRequest, host: &dyn Host) -> Result<(u16, String)> {
+    let res = host.http(req).await?;
+    Ok((res.status, res.body))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -53,68 +127,33 @@ mod web {
 }
 
 #[cfg(target_arch = "wasm32")]
-const MAX_RESPONSE_BYTES: usize = 50 * 1024 * 1024;
-
-#[cfg(target_arch = "wasm32")]
-pub async fn request(p: &Params<'_>) -> Result<RecordBatch> {
+async fn send(req: HttpRequest, _host: &dyn Host) -> Result<(u16, String)> {
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
-
-    use crate::data::json_to_batch;
-    use crate::error::fail;
     use web::js_error;
 
-    let url = p.str("url").trim().to_string();
-    if url.is_empty() {
-        return fail("URL requise");
-    }
-    // Uniquement des URL absolues http(s) : pas de data:, blob:, javascript:, ni de chemin relatif.
-    let lower = url.to_ascii_lowercase();
-    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
-        return fail("L'URL doit commencer par https:// (ou http://)");
-    }
-    let method = p.str_or("method", "GET").to_uppercase();
-    if !matches!(method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
-        return fail(format!("Méthode non autorisée : {method}"));
-    }
     let init = web_sys::RequestInit::new();
-    init.set_method(&method);
+    init.set_method(&req.method);
     // Jamais de cookies ni d'identifiants du navigateur vers des API tierces.
     init.set_credentials(web_sys::RequestCredentials::Omit);
     init.set_mode(web_sys::RequestMode::Cors);
     init.set_cache(web_sys::RequestCache::NoStore);
     init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
-
     let headers = web_sys::Headers::new().map_err(js_error)?;
-    let mut has_content_type = false;
-    for line in p.str("headers").lines() {
-        if let Some((k, v)) = line.split_once(':') {
-            let k = k.trim();
-            if k.is_empty() {
-                continue;
-            }
-            has_content_type |= k.eq_ignore_ascii_case("content-type");
-            headers.set(k, v.trim()).map_err(js_error)?;
-        }
-    }
-    let body = p.str("body");
-    if !body.trim().is_empty() && method != "GET" {
-        if !has_content_type && serde_json::from_str::<serde_json::Value>(&body).is_ok() {
-            headers
-                .set("Content-Type", "application/json")
-                .map_err(js_error)?;
-        }
-        init.set_body(&JsValue::from_str(&body));
+    for (k, v) in &req.headers {
+        headers.set(k, v).map_err(js_error)?;
     }
     init.set_headers(&headers);
+    if let Some(body) = &req.body {
+        init.set_body(&JsValue::from_str(body));
+    }
 
-    let req = web_sys::Request::new_with_str_and_init(&url, &init).map_err(js_error)?;
-    let resp: web_sys::Response = JsFuture::from(web::global_fetch(&req))
+    let request = web_sys::Request::new_with_str_and_init(&req.url, &init).map_err(js_error)?;
+    let resp: web_sys::Response = JsFuture::from(web::global_fetch(&request))
         .await
         .map_err(js_error)?
         .dyn_into()
         .map_err(js_error)?;
-    let status = resp.status();
     let declared = resp
         .headers()
         .get("content-length")
@@ -129,15 +168,5 @@ pub async fn request(p: &Params<'_>) -> Result<RecordBatch> {
         .map_err(js_error)?
         .as_string()
         .unwrap_or_default();
-    if text.len() > MAX_RESPONSE_BYTES {
-        return fail("Réponse trop volumineuse (50 Mo max.)");
-    }
-    if !resp.ok() {
-        let snippet: String = text.chars().take(200).collect();
-        return fail(format!("HTTP {status} : {snippet}"));
-    }
-    match serde_json::from_str::<serde_json::Value>(&text) {
-        Ok(doc) => json_to_batch(&navigate(doc, &p.str("items_path"))?),
-        Err(_) => json_to_batch(&serde_json::json!({ "status": status, "body": text })),
-    }
+    Ok((resp.status(), text))
 }

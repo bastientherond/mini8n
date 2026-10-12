@@ -9,10 +9,13 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
 
+use arrow::array::RecordBatch;
+
 use crate::catalog;
 use crate::data::{self, ColumnInfo};
 use crate::error::{EngineError, Result};
-use crate::nodes;
+use crate::host::{Host, NoHost, now_ms};
+use crate::nodes::{self, triggers};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workflow {
@@ -90,20 +93,60 @@ pub struct RunReport {
     pub order: Vec<String>,
     pub results: BTreeMap<String, NodeResult>,
     pub duration_ms: f64,
+    /// Nœud de sortie : dernier nœud terminal (sans successeur) exécuté avec succès.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
-#[cfg(target_arch = "wasm32")]
-fn now_ms() -> f64 {
-    js_sys::Date::now()
+impl RunReport {
+    /// Rapport d'échec global (workflow invalide, délai dépassé…).
+    pub fn failure(msg: String) -> Self {
+        Self {
+            ok: false,
+            error: Some(msg),
+            order: vec![],
+            results: BTreeMap::new(),
+            duration_ms: 0.0,
+            output: None,
+        }
+    }
+
+    /// Table produite par le nœud de sortie.
+    pub fn output_batch(&self) -> Result<Option<RecordBatch>> {
+        match self
+            .output
+            .as_ref()
+            .and_then(|id| self.results.get(id))
+            .and_then(|r| r.parquet.as_ref())
+        {
+            Some(bytes) => Ok(Some(data::from_parquet(bytes.clone())?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Premier nœud en erreur (nom, message).
+    pub fn first_error(&self) -> Option<(&str, &str)> {
+        self.order.iter().find_map(|id| {
+            let r = self.results.get(id)?;
+            (r.status == Status::Error).then(|| (id.as_str(), r.error.as_deref().unwrap_or("")))
+        })
+    }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn now_ms() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0)
+/// Données ayant déclenché l'exécution (webhook reçu, formulaire soumis, nouveaux éléments…).
+#[derive(Debug, Clone)]
+pub struct TriggerEvent {
+    /// Identifiant du nœud déclencheur.
+    pub node_id: String,
+    pub data: RecordBatch,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions<'a> {
+    /// N'exécuter que ce nœud et ses ancêtres.
+    pub target: Option<&'a str>,
+    /// Exécution automatique : seul ce déclencheur produit des données.
+    pub trigger: Option<TriggerEvent>,
 }
 
 impl Workflow {
@@ -169,22 +212,33 @@ impl Workflow {
     }
 }
 
-/// Exécute le workflow. Avec `target`, seuls ce nœud et ses ancêtres sont exécutés.
+/// Exécution manuelle, sans hôte. Avec `target`, seuls ce nœud et ses ancêtres sont exécutés.
 pub async fn run(wf: &Workflow, target: Option<&str>) -> RunReport {
+    run_with(
+        wf,
+        RunOptions {
+            target,
+            trigger: None,
+        },
+        &NoHost,
+    )
+    .await
+}
+
+/// Exécute le workflow avec un hôte (réseau, sous-workflows) et éventuellement un déclencheur.
+pub async fn run_with(wf: &Workflow, opts: RunOptions<'_>, host: &dyn Host) -> RunReport {
     let start = now_ms();
     let order = match wf.topological_order() {
         Ok(o) => o,
-        Err(e) => {
-            return RunReport {
-                ok: false,
-                error: Some(e.to_string()),
-                order: vec![],
-                results: BTreeMap::new(),
-                duration_ms: 0.0,
-            };
-        }
+        Err(e) => return RunReport::failure(e.to_string()),
     };
-    let order: Vec<String> = match target {
+    if let Some(t) = &opts.trigger {
+        match wf.nodes.iter().find(|n| n.id == t.node_id) {
+            Some(n) if triggers::is_trigger(&n.kind) => {}
+            _ => return RunReport::failure(format!("Déclencheur introuvable : {}", t.node_id)),
+        }
+    }
+    let order: Vec<String> = match opts.target {
         Some(t) => {
             let keep = wf.ancestors_of(t);
             order.into_iter().filter(|id| keep.contains(id)).collect()
@@ -197,8 +251,8 @@ pub async fn run(wf: &Workflow, target: Option<&str>) -> RunReport {
     for id in &order {
         let node = by_id[id.as_str()];
         let t0 = now_ms();
-        let result = match run_node(wf, node, &results).await {
-            Ok(Some(batch)) => match data::to_parquet(&batch) {
+        let result = match run_node(wf, node, &results, opts.trigger.as_ref(), host).await {
+            Ok(Outcome::Data(batch)) => match data::to_parquet(&batch) {
                 Ok(bytes) => NodeResult {
                     status: Status::Success,
                     error: None,
@@ -210,32 +264,58 @@ pub async fn run(wf: &Workflow, target: Option<&str>) -> RunReport {
                 },
                 Err(e) => NodeResult::failed(Status::Error, e.to_string(), now_ms() - t0),
             },
-            Ok(None) => NodeResult::failed(
-                Status::Skipped,
-                "Une entrée en amont n'a pas produit de données",
-                0.0,
-            ),
+            Ok(Outcome::Skipped(reason)) => NodeResult::failed(Status::Skipped, reason, 0.0),
             Err(e) => NodeResult::failed(Status::Error, e.to_string(), now_ms() - t0),
         };
         results.insert(id.clone(), result);
     }
 
-    let ok = results.values().all(|r| r.status == Status::Success);
+    // Un déclencheur non concerné (et sa branche) est ignoré sans être une erreur.
+    let ok = results.values().all(|r| r.status != Status::Error);
+    let output = order
+        .iter()
+        .rev()
+        .find(|id| {
+            results
+                .get(*id)
+                .is_some_and(|r| r.status == Status::Success)
+                && !wf.edges.iter().any(|e| &e.source == *id)
+        })
+        .cloned();
     RunReport {
         ok,
         error: None,
         order,
         results,
         duration_ms: now_ms() - start,
+        output,
     }
 }
 
-/// `Ok(None)` = nœud ignoré car une entrée est indisponible.
+enum Outcome {
+    Data(RecordBatch),
+    Skipped(String),
+}
+
+const UPSTREAM_SKIPPED: &str = "Une entrée en amont n'a pas produit de données";
+
 async fn run_node(
     wf: &Workflow,
     node: &Node,
     results: &BTreeMap<String, NodeResult>,
-) -> Result<Option<arrow::array::RecordBatch>> {
+    trigger: Option<&TriggerEvent>,
+    host: &dyn Host,
+) -> Result<Outcome> {
+    if triggers::is_trigger(&node.kind) {
+        return match trigger {
+            Some(t) if t.node_id == node.id => Ok(Outcome::Data(t.data.clone())),
+            Some(_) => Ok(Outcome::Skipped(
+                "Déclencheur non concerné par cette exécution".into(),
+            )),
+            None if node.disabled => Ok(Outcome::Skipped("Déclencheur désactivé".into())),
+            None => triggers::test_output(node, host).await.map(Outcome::Data),
+        };
+    }
     let Some(spec) = catalog::spec(&node.kind) else {
         return Err(EngineError::Msg(format!(
             "Type de nœud inconnu : {}",
@@ -262,13 +342,16 @@ async fn run_node(
         for e in sources {
             match results.get(&e.source).and_then(|r| r.parquet.as_ref()) {
                 Some(bytes) => batches.push(data::from_parquet(bytes.clone())?),
-                None => return Ok(None),
+                None => return Ok(Outcome::Skipped(UPSTREAM_SKIPPED.into())),
             }
         }
         inputs.push(data::append_batches(&batches)?);
     }
     if node.disabled {
-        return Ok(inputs.into_iter().next());
+        return Ok(match inputs.into_iter().next() {
+            Some(b) => Outcome::Data(b),
+            None => Outcome::Skipped("Nœud désactivé".into()),
+        });
     }
-    nodes::execute(node, inputs).await.map(Some)
+    nodes::execute(node, inputs, host).await.map(Outcome::Data)
 }
