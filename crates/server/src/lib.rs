@@ -3,7 +3,13 @@
 pub mod auth;
 pub mod config;
 pub mod error;
+pub mod executions;
+pub mod net;
+pub mod runner;
+pub mod schedule;
+pub mod scheduler;
 pub mod security;
+pub mod triggers;
 pub mod validate;
 pub mod workflows;
 pub mod workspaces;
@@ -13,7 +19,7 @@ use std::time::Duration;
 
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderValue, StatusCode, header};
-use axum::routing::{get, patch, post};
+use axum::routing::{any, get, patch, post, put};
 use axum::{Json, Router, middleware};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -35,6 +41,10 @@ pub struct Limits {
     pub login_account: RateLimiter,
     pub register_ip: RateLimiter,
     pub writes: RateLimiter,
+    /// Webhooks / formulaires : par jeton.
+    pub hooks: RateLimiter,
+    /// Points d'entrée publics : par IP.
+    pub public_ip: RateLimiter,
 }
 
 impl Default for Limits {
@@ -44,6 +54,8 @@ impl Default for Limits {
             login_account: RateLimiter::new(10, 5),
             register_ip: RateLimiter::new(5, 2),
             writes: RateLimiter::new(60, 60),
+            hooks: RateLimiter::new(120, 120),
+            public_ip: RateLimiter::new(300, 300),
         }
     }
 }
@@ -55,13 +67,18 @@ pub struct AppState {
     pub limits: Arc<Limits>,
     /// Borne le nombre de calculs Argon2 simultanés (protection CPU / mémoire).
     pub hash_permits: Arc<Semaphore>,
+    /// Exécution des workflows côté serveur.
+    pub runner: runner::Runner,
 }
 
 impl AppState {
+    /// À appeler depuis le runtime Tokio (démarre le pool d'exécution).
     pub fn new(db: PgPool, config: Config) -> Self {
+        let config = Arc::new(config);
         Self {
+            runner: runner::Runner::start_pool(db.clone(), config.clone()),
             db,
-            config: Arc::new(config),
+            config,
             limits: Arc::new(Limits::default()),
             hash_permits: Arc::new(Semaphore::new(4)),
         }
@@ -80,6 +97,15 @@ async fn not_found() -> AppError {
 pub fn app(state: AppState) -> Router {
     use workflows as wfl;
     use workspaces as ws;
+
+    // Points d'entrée publics des déclencheurs (corps limité à 1 Mo).
+    let public = Router::new()
+        .route("/hooks/{token}", any(triggers::webhook))
+        .route(
+            "/forms/{token}",
+            get(triggers::form).post(triggers::submit_form),
+        )
+        .layer(DefaultBodyLimit::max(1024 * 1024));
 
     let api = Router::new()
         .route("/health", get(health))
@@ -108,6 +134,21 @@ pub fn app(state: AppState) -> Router {
             "/workspaces/{ws}/workflows/{id}",
             get(wfl::get).put(wfl::update).delete(wfl::delete),
         )
+        .route(
+            "/workspaces/{ws}/workflows/{id}/active",
+            put(triggers::set_active),
+        )
+        .route(
+            "/workspaces/{ws}/workflows/{id}/triggers",
+            get(triggers::triggers),
+        )
+        .route(
+            "/workspaces/{ws}/workflows/{id}/run",
+            post(triggers::run_now),
+        )
+        .route("/workspaces/{ws}/executions", get(executions::list))
+        .route("/workspaces/{ws}/executions/{id}", get(executions::get))
+        .merge(public)
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(
             state.clone(),

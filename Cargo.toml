@@ -12,7 +12,6 @@ opt-level = "s"
 strip = true
 lto = true
 codegen-units = 1
-panic = "abort"
 
 # Le serveur privilégie la vitesse (le moteur wasm, la taille).
 [profile.release.package.mini8n-server]

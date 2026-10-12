@@ -25,6 +25,7 @@ pub struct WorkflowSummary {
     id: Uuid,
     name: String,
     version: i32,
+    active: bool,
     updated_at: DateTime<Utc>,
     updated_by: Option<String>,
 }
@@ -35,8 +36,13 @@ pub struct WorkflowDoc {
     id: Uuid,
     name: String,
     version: i32,
+    active: bool,
     definition: sqlx::types::Json<Value>,
     updated_at: DateTime<Utc>,
+    /// Motif de désactivation automatique (déclencheur devenu invalide à la sauvegarde).
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deactivated: Option<String>,
 }
 
 fn valid_id(v: &Value) -> bool {
@@ -95,7 +101,7 @@ pub async fn list(
     require_member(&state.db, ws, user.id).await?;
     Ok(Json(
         sqlx::query_as(
-            "SELECT w.id, w.name, w.version, w.updated_at, u.display_name AS updated_by
+            "SELECT w.id, w.name, w.version, w.active, w.updated_at, u.display_name AS updated_by
              FROM workflows w LEFT JOIN users u ON u.id = w.updated_by
              WHERE w.workspace_id = $1 ORDER BY w.updated_at DESC",
         )
@@ -106,7 +112,7 @@ pub async fn list(
 }
 
 async fn fetch(state: &AppState, ws: Uuid, id: Uuid) -> AppResult<WorkflowDoc> {
-    sqlx::query_as("SELECT id, name, version, definition, updated_at FROM workflows WHERE id = $1 AND workspace_id = $2")
+    sqlx::query_as("SELECT id, name, version, active, definition, updated_at FROM workflows WHERE id = $1 AND workspace_id = $2")
         .bind(id)
         .bind(ws)
         .fetch_optional(&state.db)
@@ -182,9 +188,11 @@ pub async fn update(
     require_member(&state.db, ws, user.id).await?;
     let name = validate::label(&body.name, "Nom du workflow", 120)?;
     check_definition(&body.definition)?;
-    let updated = sqlx::query(
+    let mut tx = state.db.begin().await?;
+    let active: Option<bool> = sqlx::query_scalar(
         "UPDATE workflows SET name = $3, definition = $4, version = version + 1, updated_by = $5, updated_at = now()
-         WHERE id = $1 AND workspace_id = $2 AND version = $6",
+         WHERE id = $1 AND workspace_id = $2 AND version = $6
+         RETURNING active",
     )
     .bind(id)
     .bind(ws)
@@ -192,16 +200,25 @@ pub async fn update(
     .bind(sqlx::types::Json(&body.definition))
     .bind(user.id)
     .bind(body.version)
-    .execute(&state.db)
-    .await?
-    .rows_affected();
-    if updated == 0 {
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(active) = active else {
+        drop(tx);
         fetch(&state, ws, id).await?; // 404 s'il n'existe pas
         return Err(AppError::Conflict(
             "Ce workflow a été modifié par quelqu'un d'autre. Rechargez-le.".into(),
         ));
-    }
-    Ok(Json(fetch(&state, ws, id).await?))
+    };
+    // Workflow actif : ses déclencheurs suivent la nouvelle définition.
+    let deactivated = if active {
+        crate::triggers::resync_after_save(&mut tx, ws, id, &body.definition).await?
+    } else {
+        None
+    };
+    tx.commit().await?;
+    let mut doc = fetch(&state, ws, id).await?;
+    doc.deactivated = deactivated;
+    Ok(Json(doc))
 }
 
 pub async fn delete(

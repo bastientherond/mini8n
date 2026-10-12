@@ -104,7 +104,11 @@ pub async fn require_same_origin(
     req: Request,
     next: Next,
 ) -> Response {
-    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+    // Les webhooks sont appelés par des services tiers (sans en-tête Origin) :
+    // ils sont protégés par leur jeton secret, leur secret facultatif et la limitation de débit.
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS)
+        || req.uri().path().starts_with("/hooks/")
+    {
         return next.run(req).await;
     }
     let headers = req.headers();

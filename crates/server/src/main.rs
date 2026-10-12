@@ -3,7 +3,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
-use mini8n_server::{AppState, Config, MIGRATOR, app, auth};
+use mini8n_server::{AppState, Config, MIGRATOR, app, auth, runner, scheduler};
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
@@ -86,9 +86,31 @@ async fn main() {
         std::process::exit(1);
     }
 
+    match runner::recover_interrupted(&db).await {
+        Ok(n) if n > 0 => tracing::warn!(n, "exécutions interrompues marquées en erreur"),
+        Ok(_) => {}
+        Err(e) => tracing::error!(%e, "reprise des exécutions"),
+    }
     auth::spawn_session_cleanup(Arc::new(db.clone()));
+    let retention = config.executions_retention_days;
     let bind = config.bind;
-    let router = app(AppState::new(db, config));
+    let state = AppState::new(db, config);
+    scheduler::spawn(state.runner.clone());
+    {
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(3600));
+            loop {
+                tick.tick().await;
+                match runner::purge_old(&db, retention).await {
+                    Ok(n) if n > 0 => tracing::info!(n, "anciennes exécutions supprimées"),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(%e, "purge des exécutions"),
+                }
+            }
+        });
+    }
+    let router = app(state);
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .unwrap_or_else(|e| {

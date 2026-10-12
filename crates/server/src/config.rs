@@ -28,6 +28,14 @@ pub struct Config {
     pub session_ttl_hours: i64,
     /// Désactiver les inscriptions publiques (après création des comptes).
     pub allow_registration: bool,
+    /// Autoriser les nœuds HTTP exécutés côté serveur à joindre des adresses privées (déconseillé).
+    pub http_allow_private: bool,
+    /// Nombre de threads d'exécution des workflows.
+    pub runner_threads: usize,
+    /// Durée maximale d'une exécution (secondes).
+    pub execution_timeout_secs: u64,
+    /// Conservation de l'historique des exécutions (jours).
+    pub executions_retention_days: i64,
 }
 
 fn env(key: &str) -> Option<String> {
@@ -97,6 +105,19 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(24 * 7),
             allow_registration: env_bool("ALLOW_REGISTRATION", true),
+            http_allow_private: env_bool("HTTP_ALLOW_PRIVATE", false),
+            runner_threads: env("RUNNER_THREADS")
+                .and_then(|v| v.parse().ok())
+                .filter(|n| (1..=64).contains(n))
+                .unwrap_or(4),
+            execution_timeout_secs: env("EXECUTION_TIMEOUT_SECS")
+                .and_then(|v| v.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(300),
+            executions_retention_days: env("EXECUTIONS_RETENTION_DAYS")
+                .and_then(|v| v.parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(30),
         })
     }
 }

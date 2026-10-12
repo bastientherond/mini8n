@@ -141,8 +141,9 @@ fn session_cookie(
     .map_err(AppError::internal)
 }
 
-/// Jeton de session : le cookie `__Host-` est prioritaire (il ne peut venir que d'HTTPS).
-fn read_cookie(headers: &HeaderMap) -> Option<String> {
+/// Jetons de session présents (le cookie `__Host-` d'abord). Plusieurs peuvent coexister,
+/// par exemple un ancien cookie HTTPS périmé à côté d'un cookie HTTP valide : chacun est essayé.
+fn read_cookies(headers: &HeaderMap) -> Vec<String> {
     let pairs: Vec<(String, String)> = headers
         .get_all(header::COOKIE)
         .iter()
@@ -153,13 +154,33 @@ fn read_cookie(headers: &HeaderMap) -> Option<String> {
         .collect();
     [SECURE_COOKIE, PLAIN_COOKIE]
         .iter()
-        .find_map(|name| {
+        .flat_map(|name| {
             pairs
                 .iter()
-                .find(|(k, _)| k == name)
+                .filter(move |(k, _)| k == name)
                 .map(|(_, v)| v.clone())
         })
         .filter(|v| v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+        .take(4)
+        .collect()
+}
+
+/// Efface les deux variantes du cookie de session.
+fn clear_cookies() -> [HeaderValue; 2] {
+    [
+        HeaderValue::from_static(
+            "__Host-mini8n_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure",
+        ),
+        HeaderValue::from_static("mini8n_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"),
+    ]
+}
+
+fn logged_out() -> Response {
+    let mut res = StatusCode::NO_CONTENT.into_response();
+    for c in clear_cookies() {
+        res.headers_mut().append(header::SET_COOKIE, c);
+    }
+    res
 }
 
 async fn create_session(
@@ -216,17 +237,23 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let token = read_cookie(&parts.headers).ok_or(AppError::Unauthorized)?;
-        let hash = token_hash(&token);
-        let row: Option<(Uuid, String, String, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT u.id, u.email, u.display_name, s.last_seen_at
-             FROM sessions s JOIN users u ON u.id = s.user_id
-             WHERE s.token_hash = $1 AND s.expires_at > now()",
-        )
-        .bind(&hash)
-        .fetch_optional(&state.db)
-        .await?;
-        let (id, email, name, last_seen) = row.ok_or(AppError::Unauthorized)?;
+        let mut found = None;
+        for token in read_cookies(&parts.headers) {
+            let hash = token_hash(&token);
+            let row: Option<(Uuid, String, String, DateTime<Utc>)> = sqlx::query_as(
+                "SELECT u.id, u.email, u.display_name, s.last_seen_at
+                 FROM sessions s JOIN users u ON u.id = s.user_id
+                 WHERE s.token_hash = $1 AND s.expires_at > now()",
+            )
+            .bind(&hash)
+            .fetch_optional(&state.db)
+            .await?;
+            if let Some(row) = row {
+                found = Some((row, hash));
+                break;
+            }
+        }
+        let ((id, email, name, last_seen), hash) = found.ok_or(AppError::Unauthorized)?;
         if Utc::now() - last_seen > Duration::minutes(5) {
             sqlx::query("UPDATE sessions SET last_seen_at = now() WHERE token_hash = $1")
                 .bind(&hash)
@@ -411,17 +438,13 @@ pub async fn login(
 }
 
 pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> AppResult<Response> {
-    if let Some(token) = read_cookie(&headers) {
+    for token in read_cookies(&headers) {
         sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
             .bind(token_hash(&token))
             .execute(&state.db)
             .await?;
     }
-    Ok(with_cookie(
-        StatusCode::NO_CONTENT,
-        session_cookie(&state, &headers, "", 0)?,
-        (),
-    ))
+    Ok(logged_out())
 }
 
 /// Configuration publique pour l'écran d'accueil.
@@ -478,20 +501,12 @@ pub async fn change_password(
 }
 
 /// Déconnecte toutes les sessions de l'utilisateur.
-pub async fn logout_all(
-    State(state): State<AppState>,
-    user: AuthUser,
-    headers: HeaderMap,
-) -> AppResult<Response> {
+pub async fn logout_all(State(state): State<AppState>, user: AuthUser) -> AppResult<Response> {
     sqlx::query("DELETE FROM sessions WHERE user_id = $1")
         .bind(user.id)
         .execute(&state.db)
         .await?;
-    Ok(with_cookie(
-        StatusCode::NO_CONTENT,
-        session_cookie(&state, &headers, "", 0)?,
-        (),
-    ))
+    Ok(logged_out())
 }
 
 /// Purge périodique des sessions expirées.

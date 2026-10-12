@@ -29,6 +29,10 @@ async fn setup_with(cookie_secure: CookieSecure, trust_proxy: bool) -> Option<Ro
         trust_proxy,
         session_ttl_hours: 1,
         allow_registration: true,
+        http_allow_private: false,
+        runner_threads: 2,
+        execution_timeout_secs: 30,
+        executions_retention_days: 30,
     };
     Some(app(AppState::new(db, config)))
 }
@@ -502,5 +506,53 @@ async fn cookie_policy_follows_forwarded_proto() {
             .await
             .status,
         StatusCode::OK
+    );
+}
+
+/// Un ancien cookie `__Host-` périmé ne doit pas masquer un cookie de session valide.
+#[tokio::test]
+async fn stale_secure_cookie_does_not_hide_valid_session() {
+    let Some(app) = setup_with(CookieSecure::Auto, true).await else {
+        return;
+    };
+    let r = api(
+        &app,
+        "POST",
+        "/api/auth/register",
+        Some(json!({"email": email(), "name": "T", "password": "un mot de passe solide"})),
+        None,
+    )
+    .await;
+    let plain = r.cookie.unwrap();
+    assert!(plain.starts_with("mini8n_session="));
+    let both = format!("__Host-mini8n_session={}; {plain}", "b".repeat(64));
+    assert_eq!(
+        api(&app, "GET", "/api/auth/me", None, Some(&both))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    // La déconnexion efface les deux variantes du cookie.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/logout")
+        .header(header::ORIGIN, ORIGIN)
+        .header(header::COOKIE, &both)
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let cleared: Vec<_> = res
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(cleared.len(), 2);
+    assert!(cleared.iter().all(|c| c.contains("Max-Age=0")));
+    assert_eq!(
+        api(&app, "GET", "/api/auth/me", None, Some(&both))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
     );
 }
