@@ -46,6 +46,17 @@ server {
         include /etc/nginx/templates/proxy.conf;
     }
 
+    # Téléversement de fichiers (50 Mo) et exécution d'intégrations depuis l'éditeur (40 Mo).
+    location ~ ^/api/workspaces/[0-9a-f-]+/(files|integrations/run)$ {
+        limit_req zone=api burst=20 nodelay;
+        client_max_body_size 50m;
+        client_body_timeout 60s;
+        include /tmp/snippets/security-headers.conf;
+        proxy_pass http://mini8n_api;
+        include /etc/nginx/templates/proxy.conf;
+        proxy_request_buffering off;
+    }
+
     location /api/ {
         limit_req zone=api burst=40 nodelay;
         include /tmp/snippets/security-headers.conf;

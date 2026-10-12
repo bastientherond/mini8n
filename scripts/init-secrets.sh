@@ -12,5 +12,16 @@ if [ ! -s secrets/db_password.txt ]; then
 else
   echo "secrets/db_password.txt existe déjà (inchangé)"
 fi
-# Lisible par l'utilisateur des conteneurs ; le dossier parent reste privé (700).
-chmod 644 secrets/db_password.txt
+# Clé de chiffrement des identifiants (32 octets, base64) : à sauvegarder, sa perte rend
+# les identifiants enregistrés illisibles.
+if [ ! -s secrets/credentials_key.txt ]; then
+  head -c 32 /dev/urandom | base64 > secrets/credentials_key.txt
+  echo "secrets/credentials_key.txt créé (à sauvegarder)"
+fi
+# Jeton partagé entre l'API et le service connectors.
+if [ ! -s secrets/connectors_token.txt ]; then
+  head -c 36 /dev/urandom | base64 | tr '+/' '-_' > secrets/connectors_token.txt
+  echo "secrets/connectors_token.txt créé"
+fi
+# Lisibles par l'utilisateur des conteneurs ; le dossier parent reste privé (700).
+chmod 644 secrets/*.txt

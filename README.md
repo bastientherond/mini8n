@@ -24,7 +24,7 @@ moteur d'exécution en **Rust compilé en WebAssembly**, données échangées en
 ## Démarrer avec Docker (recommandé)
 
 ```bash
-./scripts/init-secrets.sh          # génère secrets/db_password.txt
+./scripts/init-secrets.sh          # génère les secrets (base, clé des identifiants, jeton connecteurs)
 cp .env.example .env               # optionnel : adapter la configuration
 docker compose up -d --build
 ```
@@ -47,6 +47,7 @@ Interface (inspirée de Supabase) :
 | `db` | `postgres:18-alpine` | données (comptes, sessions, workspaces, workflows) |
 | `server` | `crates/server/Dockerfile` | API Rust, image distroless non-root |
 | `web` | `web/Dockerfile` | nginx non-root : interface + reverse proxy `/api` |
+| `connectors` | `connectors/Dockerfile` | Node non-root : pilote Oracle « thin » (node-oracledb), joignable par l'API seulement |
 | `proxy` | `caddy:2.11-alpine` | TLS automatique (profil `tls`) |
 
 En production, avec un nom de domaine pointant vers le serveur :
@@ -77,6 +78,8 @@ cd web && npm install && npm run dev
 | `npm run check` | vérification TypeScript / Svelte |
 | `cargo test` | tests du moteur et du serveur |
 | `TEST_DATABASE_URL=postgres://… cargo test -p mini8n-server` | + tests d'intégration de l'API |
+| `TEST_MYSQL=hôte:port:base:user:mdp`, `TEST_ORACLE=…`, `TEST_CONNECTORS_URL`, `TEST_CONNECTORS_TOKEN` | + tests MySQL et Oracle |
+| `npm test` (dans `connectors/`) | tests du connecteur Oracle |
 
 ## Structure
 
@@ -91,7 +94,10 @@ crates/server/          API Rust (axum + sqlx)
   src/runner.rs         exécution côté serveur (pool de threads, sous-workflows, erreurs)
   src/scheduler.rs      planification et surveillance d'API
   src/schedule.rs       intervalle / quotidien / hebdomadaire / cron, fuseaux horaires
-  src/net.rs            client HTTP sortant anti-SSRF
+  src/net.rs            client HTTP sortant anti-SSRF, politique réseau (liste blanche)
+  src/credentials.rs    identifiants chiffrés ; src/crypto.rs : AES-256-GCM
+  src/files.rs          fichiers du workspace
+  src/integrations/     PostgreSQL / MySQL (sqlx), Oracle (connecteur), fichiers, e-mail, messageries
   src/executions.rs     historique des exécutions
   src/security.rs       anti-CSRF, limitation de débit, IP cliente
   tests/api.rs          tests d'intégration (PostgreSQL)
@@ -104,6 +110,7 @@ web/                    interface Svelte 5 + Vite + Tailwind 4 + shadcn-svelte
     shell/              barre du haut, barre latérale, menu avatar, palette ⌘K, dialogues
     pages/              accueil, workflows, membres, paramètres, compte
     Editor.svelte       éditeur de workflow (canevas, palette de nœuds, inspecteur, données)
+connectors/             service Node « connectors » (Oracle, node-oracledb thin)
 deploy/Caddyfile        reverse proxy TLS
 compose.yaml            orchestration
 ```
@@ -192,6 +199,30 @@ HTTP des workflows (nœud HTTP, surveillance) ne peuvent joindre que des **adres
 (protection SSRF : boucle locale, réseaux privés et Docker, métadonnées cloud, redirections
 vers ces adresses… sont refusés).
 
+## Intégrations
+
+| Nœud | Rôle |
+| --- | --- |
+| PostgreSQL · lire / écrire | requête SQL → table ; insertion ou mise à jour (`ON CONFLICT`) de la table d'entrée |
+| MySQL · lire / écrire | idem pour MySQL / MariaDB (`ON DUPLICATE KEY UPDATE`) |
+| Oracle · lire / écrire | via le service `connectors` (node-oracledb en mode thin : open source, sans Instant Client) |
+| Créer un fichier | table → fichier CSV, JSON, Parquet ou Excel dans l'espace **Fichiers** du workspace |
+| Lire un fichier | CSV (séparateur détecté), JSON, Parquet, Excel / OpenDocument → table |
+| Envoyer un e-mail | SMTP (STARTTLS / TLS) : un e-mail par ligne ou un récapitulatif avec pièce jointe CSV / Excel |
+| Message (Slack, Teams…) | webhook entrant Slack, Discord, Microsoft Teams, Mattermost ou Google Chat |
+
+Les textes acceptent des variables : `{{colonne}}` (valeur de la ligne), `{{nb_lignes}}` et
+`{{tableau}}` (récapitulatif).
+
+Les accès sont des **identifiants** du workspace (page « Identifiants ») : chiffrés en AES-256-GCM
+(clé `CREDENTIALS_KEY`), jamais renvoyés au navigateur, référencés par les nœuds (un export de
+workflow ne contient aucun secret). Ces nœuds s'exécutent **toujours sur le serveur**, y compris
+lors d'un test dans l'éditeur. Les connexions suivent la même protection SSRF que les requêtes
+HTTP : pour joindre une base sur un réseau privé, ajoutez-la à `NETWORK_ALLOWLIST`
+(`db.interne,10.20.0.0/16`).
+
+> Sauvegardez `secrets/credentials_key.txt` : sans elle, les identifiants enregistrés sont illisibles.
+
 ## Nœuds disponibles
 
 | Catégorie | Nœud | Rôle |
@@ -209,6 +240,10 @@ vers ces adresses… sont refusés).
 | Transformation | Agréger | `group by` + `count, count_distinct, sum, avg, min, max, first, last` |
 | Combinaison | Fusionner | empiler, jointure interne, jointure gauche |
 | Flux | Exécuter un workflow | appelle un autre workflow du workspace et récupère sa sortie |
+| Intégrations | PostgreSQL, MySQL, Oracle, fichiers, e-mail, messageries | voir « Intégrations » |
+
+Dans l'éditeur, un **double-clic** sur un nœud (ou Entrée) ouvre sa vue détaillée plein écran :
+entrée à gauche, paramètres au centre, sortie à droite.
 
 Un nœud **désactivé** transmet son entrée telle quelle. « Exécuter jusqu'ici » n'exécute
 que le nœud et ses ancêtres.
@@ -242,6 +277,11 @@ round floor ceil abs sqrt pow min max coalesce if is_null number string`.
 | argon2, sha2, getrandom (RustCrypto) | MIT / Apache-2.0 | hachage, jetons |
 | [reqwest](https://github.com/seanmonstar/reqwest) (rustls) | MIT / Apache-2.0 | requêtes HTTP des workflows côté serveur |
 | chrono, chrono-tz | MIT / Apache-2.0 | planification, fuseaux horaires |
+| aes-gcm, base64 (RustCrypto) | MIT / Apache-2.0 | chiffrement des identifiants |
+| sqlx (PostgreSQL, MySQL) | MIT / Apache-2.0 | intégrations bases de données |
+| [node-oracledb](https://github.com/oracle/node-oracledb) (mode thin) | Apache-2.0 / UPL-1.0 | intégration Oracle, sans client propriétaire |
+| [lettre](https://github.com/lettre/lettre) | MIT | e-mail SMTP |
+| [calamine](https://github.com/tafia/calamine), [rust_xlsxwriter](https://github.com/jmcnamara/rust_xlsxwriter) | MIT / Apache-2.0 | lecture et écriture Excel |
 | PostgreSQL, nginx, Caddy | PostgreSQL / BSD-2 / Apache-2.0 | base, serveur web, TLS |
 
 ## Limites actuelles / pistes
@@ -249,5 +289,5 @@ round floor ceil abs sqrt pow min max coalesce if is_null number string`.
 - Pas encore de vérification d'e-mail ni de réinitialisation de mot de passe par e-mail.
 - Les limites de débit de l'API sont en mémoire (une seule instance de `server`).
 - Le nœud HTTP exécuté dans l'éditeur est soumis au CORS du navigateur (pas côté serveur).
-- Pas encore de déclencheurs e-mail (IMAP) ni flux RSS/XML.
+- Pas encore de déclencheurs e-mail (IMAP) ni flux RSS/XML, ni de connecteurs SQL Server, MongoDB, S3.
 - Le `.wasm` fait ~8 Mo (~1,8 Mo gzip), surtout à cause des noyaux Arrow.
