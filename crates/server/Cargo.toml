@@ -1,0 +1,27 @@
+[package]
+name = "mini8n-server"
+description = "API mini8n : comptes, sessions, workspaces et stockage des workflows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio", "tracing"] }
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tower = { version = "0.5", default-features = false, features = ["limit", "timeout", "util"] }
+tower-http = { version = "0.6.8", features = ["limit", "timeout", "trace", "set-header", "catch-panic", "request-id"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
+argon2 = { version = "0.5.3", features = ["std"] }
+sha2 = "0.10.9"
+getrandom = "0.3"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4.41", default-features = false, features = ["clock", "serde", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

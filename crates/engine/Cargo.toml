@@ -1,0 +1,29 @@
+[package]
+name = "mini8n-engine"
+description = "Moteur d'exécution de workflows mini8n (Rust + WebAssembly, données Parquet)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Apache Arrow / Parquet (Apache-2.0) — "snap" = compression Snappy en pur Rust, compatible wasm.
+arrow = { version = "60.0.0", default-features = false, features = ["csv", "json"] }
+parquet = { version = "60.0.0", default-features = false, features = ["arrow", "snap"] }
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# La version doit correspondre exactement au CLI wasm-bindgen installé.
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4.79"
+js-sys = "0.3.106"
+web-sys = { version = "0.3.106", features = ["Headers", "ReferrerPolicy", "Request", "RequestCache", "RequestCredentials", "RequestInit", "RequestMode", "Response"] }
+console_error_panic_hook = "0.1.7"
+
+[dev-dependencies]
+futures = { version = "0.3", default-features = false, features = ["executor"] }

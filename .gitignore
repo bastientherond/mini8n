@@ -1,0 +1,9 @@
+target/
+web/node_modules/
+web/dist/
+web/src/lib/engine/pkg/
+.DS_Store
+.idea/
+secrets/
+.env
+.claude/
