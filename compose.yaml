@@ -68,12 +68,19 @@ services:
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
       TRUST_PROXY: "true"
       RUST_LOG: ${RUST_LOG:-info,tower_http=info,sqlx=warn}
+      # Exécution des workflows (déclencheurs automatiques).
+      RUNNER_THREADS: ${RUNNER_THREADS:-4}
+      EXECUTION_TIMEOUT_SECS: ${EXECUTION_TIMEOUT_SECS:-300}
+      EXECUTIONS_RETENTION_DAYS: ${EXECUTIONS_RETENTION_DAYS:-30}
+      # Les nœuds HTTP côté serveur ne peuvent joindre que des adresses publiques (anti-SSRF).
+      HTTP_ALLOW_PRIVATE: "false"
     secrets: [db_password]
     depends_on:
       db: { condition: service_healthy }
-    networks: [data, backend]
-    pids_limit: 100
-    mem_limit: 512m
+    # egress : accès sortant pour les nœuds HTTP et la surveillance d'API (adresses privées bloquées).
+    networks: [data, backend, egress]
+    pids_limit: 200
+    mem_limit: 1g
     cpus: 2
 
   web:
@@ -130,6 +137,8 @@ networks:
     internal: true
   # Exposition HTTP directe (port publié).
   edge: {}
+  # Accès sortant de l'API (requêtes HTTP des workflows).
+  egress: {}
   # Reverse proxy TLS → nginx (adresse fixe de confiance pour l'IP cliente).
   tls:
     ipam:

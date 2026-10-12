@@ -29,6 +29,23 @@ server {
         include /etc/nginx/templates/proxy.conf;
     }
 
+    # Points d'entrée publics des déclencheurs (webhooks appelés par des services tiers, formulaires).
+    location /api/hooks/ {
+        limit_req zone=hooks burst=60 nodelay;
+        client_max_body_size 1m;
+        include /tmp/snippets/security-headers.conf;
+        proxy_pass http://mini8n_api;
+        include /etc/nginx/templates/proxy.conf;
+    }
+
+    location /api/forms/ {
+        limit_req zone=auth burst=20 nodelay;
+        client_max_body_size 1m;
+        include /tmp/snippets/security-headers.conf;
+        proxy_pass http://mini8n_api;
+        include /etc/nginx/templates/proxy.conf;
+    }
+
     location /api/ {
         limit_req zone=api burst=40 nodelay;
         include /tmp/snippets/security-headers.conf;

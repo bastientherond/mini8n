@@ -87,6 +87,12 @@ crates/server/          API Rust (axum + sqlx)
   src/auth.rs           inscription, connexion, sessions, mot de passe
   src/workspaces.rs     workspaces, membres, rôles
   src/workflows.rs      stockage des workflows (version optimiste)
+  src/triggers.rs       activation, webhooks et formulaires publics, exécution à distance
+  src/runner.rs         exécution côté serveur (pool de threads, sous-workflows, erreurs)
+  src/scheduler.rs      planification et surveillance d'API
+  src/schedule.rs       intervalle / quotidien / hebdomadaire / cron, fuseaux horaires
+  src/net.rs            client HTTP sortant anti-SSRF
+  src/executions.rs     historique des exécutions
   src/security.rs       anti-CSRF, limitation de débit, IP cliente
   tests/api.rs          tests d'intégration (PostgreSQL)
 web/                    interface Svelte 5 + Vite + Tailwind 4 + shadcn-svelte
@@ -125,6 +131,14 @@ compose.yaml            orchestration
 - Entrées validées (champs inconnus refusés, tailles bornées), corps limités à 2 Mo,
   délai max. de 30 s par requête, aucune erreur interne exposée, requêtes SQL paramétrées.
 
+**Déclencheurs**
+- Webhooks et formulaires identifiés par un jeton aléatoire de 192 bits (régénérable), actifs
+  seulement si le workflow l'est ; secret de webhook comparé en temps constant ; limitation
+  de débit par jeton et par IP ; corps limités à 1 Mo ; formulaires soumis à la vérification
+  d'origine et validés champ par champ.
+- Exécutions bornées (file, délai, profondeur de sous-workflows), paniques du moteur confinées,
+  pas de boucle entre workflows « Sur erreur ».
+
 **Navigateur**
 - CSP stricte : aucun script inline, `wasm-unsafe-eval` seul, pas d'iframe (`frame-ancestors 'none'`),
   `connect-src` configurable (`CSP_CONNECT_SRC`) pour le nœud HTTP.
@@ -138,8 +152,9 @@ compose.yaml            orchestration
 **Conteneurs**
 - Images minimales (distroless, alpine), utilisateurs non-root, système de fichiers en lecture seule,
   `cap_drop: ALL`, `no-new-privileges`, limites mémoire / processus.
-- Base de données et API sur des réseaux Docker **internes** (sans accès Internet ni port publié) ;
-  seul nginx (ou Caddy) est exposé, sur `127.0.0.1` par défaut.
+- Base de données sur un réseau Docker **interne** ; l'API n'a qu'un accès **sortant** (requêtes
+  HTTP des workflows, filtrées contre le SSRF) ; seul nginx (ou Caddy) est exposé, sur
+  `127.0.0.1` par défaut.
 - Mot de passe PostgreSQL en secret Docker (fichier hors dépôt), authentification SCRAM-SHA-256.
 - `npm ci --ignore-scripts`, `Cargo.lock` respecté (`--locked`), tests exécutés pendant le build.
 
@@ -149,6 +164,33 @@ Chaque nœud produit une table Apache Arrow, **sérialisée en Parquet** (compre
 Les nœuds suivants relisent ce Parquet ; l'interface reçoit aussi ces octets pour
 l'aperçu paginé et l'export (`.parquet`, `.csv`, `.json`). Plusieurs liens vers une même
 entrée sont empilés (union des colonnes).
+
+## Déclencheurs
+
+Un workflow démarre par un ou plusieurs déclencheurs. Dans l'éditeur, « Exécuter » lance le
+workflow dans le navigateur avec les **données de test** de chaque déclencheur. Pour les
+déclencheurs automatiques, il faut **activer** le workflow (interrupteur « Actif ») : il est alors
+exécuté **côté serveur**, et chaque exécution apparaît dans **Exécutions**.
+
+| Déclencheur | Démarre le workflow… | Données produites |
+| --- | --- | --- |
+| Déclenchement manuel | bouton Exécuter (éditeur) ou « Exécuter sur le serveur » | `declenche_le` |
+| Planification | toutes les N minutes, chaque jour / certains jours à HH:MM, ou expression cron (5 champs), dans le fuseau choisi | `declenche_le`, `planifie_pour` |
+| Webhook | à chaque requête sur `/api/hooks/<jeton>` (méthode, secret `X-Mini8n-Secret` facultatif) ; réponse immédiate (202) ou résultat du workflow en JSON | corps JSON (objet ou tableau), formulaire encodé ou texte, `_methode`, `_recu_le` |
+| Formulaire | à chaque envoi d'une page publique `/#/f/<jeton>` (champs texte, texte long, e-mail, nombre, date, case ; validés côté serveur) | une ligne par réponse + `soumis_le` |
+| Surveillance d'API | quand une API JSON interrogée toutes les N minutes renvoie de **nouveaux** éléments (repérés par une colonne identifiante) | les nouveaux éléments seulement |
+| Appelé par un workflow | quand un autre workflow l'exécute avec le nœud « Exécuter un workflow » | la table envoyée par l'appelant |
+| Sur erreur | quand une exécution automatique d'un autre workflow du workspace échoue | `workflow`, `noeud`, `erreur`, `execution_id`, `date` |
+
+Le nœud **Exécuter un workflow** envoie sa table d'entrée à un autre workflow et récupère sa
+sortie (son dernier nœud terminal exécuté avec succès). Il fonctionne dans l'éditeur comme sur le
+serveur, jusqu'à 5 niveaux d'imbrication.
+
+Côté serveur : pool de threads dédié (`RUNNER_THREADS`), file bornée, délai maximal par exécution
+(`EXECUTION_TIMEOUT_SECS`), historique conservé `EXECUTIONS_RETENTION_DAYS` jours. Les requêtes
+HTTP des workflows (nœud HTTP, surveillance) ne peuvent joindre que des **adresses publiques**
+(protection SSRF : boucle locale, réseaux privés et Docker, métadonnées cloud, redirections
+vers ces adresses… sont refusés).
 
 ## Nœuds disponibles
 
@@ -166,6 +208,7 @@ entrée sont empilés (union des colonnes).
 | Transformation | Dédoublonner | sur toutes les colonnes ou certaines |
 | Transformation | Agréger | `group by` + `count, count_distinct, sum, avg, min, max, first, last` |
 | Combinaison | Fusionner | empiler, jointure interne, jointure gauche |
+| Flux | Exécuter un workflow | appelle un autre workflow du workspace et récupère sa sortie |
 
 Un nœud **désactivé** transmet son entrée telle quelle. « Exécuter jusqu'ici » n'exécute
 que le nœud et ses ancêtres.
@@ -197,12 +240,14 @@ round floor ceil abs sqrt pow min max coalesce if is_null number string`.
 | [axum](https://github.com/tokio-rs/axum), tokio, tower-http | MIT | API HTTP |
 | [sqlx](https://github.com/launchbadge/sqlx) | MIT / Apache-2.0 | PostgreSQL, migrations |
 | argon2, sha2, getrandom (RustCrypto) | MIT / Apache-2.0 | hachage, jetons |
+| [reqwest](https://github.com/seanmonstar/reqwest) (rustls) | MIT / Apache-2.0 | requêtes HTTP des workflows côté serveur |
+| chrono, chrono-tz | MIT / Apache-2.0 | planification, fuseaux horaires |
 | PostgreSQL, nginx, Caddy | PostgreSQL / BSD-2 / Apache-2.0 | base, serveur web, TLS |
 
 ## Limites actuelles / pistes
 
 - Pas encore de vérification d'e-mail ni de réinitialisation de mot de passe par e-mail.
 - Les limites de débit de l'API sont en mémoire (une seule instance de `server`).
-- Pas de déclencheurs (cron, webhook) : l'exécution est manuelle.
-- Le nœud HTTP est soumis au CORS du navigateur.
+- Le nœud HTTP exécuté dans l'éditeur est soumis au CORS du navigateur (pas côté serveur).
+- Pas encore de déclencheurs e-mail (IMAP) ni flux RSS/XML.
 - Le `.wasm` fait ~8 Mo (~1,8 Mo gzip), surtout à cause des noyaux Arrow.
