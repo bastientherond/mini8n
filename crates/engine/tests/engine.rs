@@ -159,7 +159,7 @@ fn expressions() {
             {"id": "src", "kind": "manual", "params": {"data": "[{\"nom\": \" alice \", \"age\": 30, \"ville\": {\"cp\": \"75001\"}}, {\"nom\": \"Bob\", \"age\": null}]"}},
             {"id": "e1", "kind": "formula", "params": {"column": "label", "expression": "upper(trim(nom)) + \" (\" + coalesce(string(age), \"?\") + \")\""}},
             {"id": "e2", "kind": "formula", "params": {"column": "majeur", "expression": "if(age >= 18, true, false)"}},
-            {"id": "e3", "kind": "formula", "params": {"column": "cp", "expression": "`ville.cp`"}}
+            {"id": "e3", "kind": "formula", "params": {"column": "cp", "expression": "$json.ville.cp"}}
         ],
         "edges": [{"source": "src", "target": "e1"}, {"source": "e1", "target": "e2"}, {"source": "e2", "target": "e3"}]
     }));

@@ -22,8 +22,10 @@ pub enum ParamType {
     String,
     /// Texte multi-ligne.
     Text,
-    /// Expression (éditeur monospace).
+    /// Expression JavaScript (éditeur de code avec autocomplétion).
     Expression,
+    /// Requête SQL (éditeur de code).
+    Sql,
     /// Document JSON.
     Json,
     Number,
@@ -55,6 +57,12 @@ pub struct ParamSpec {
     /// Type d'identifiant attendu (paramètres `credential`).
     #[serde(skip_serializing_if = "str::is_empty")]
     pub credential: &'static str,
+    /// Le texte accepte des expressions `{{ … }}`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub template: bool,
+    /// Variables propres à ce paramètre (proposées par l'autocomplétion).
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    pub vars: &'static [&'static str],
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,6 +88,8 @@ fn param(name: &'static str, label: &'static str, ty: ParamType, default: Json) 
         placeholder: "",
         help: "",
         credential: "",
+        template: false,
+        vars: &[],
     }
 }
 
@@ -107,11 +117,20 @@ impl ParamSpec {
         self.help = h;
         self
     }
+    /// Accepte des expressions `{{ … }}`.
+    fn template(mut self) -> Self {
+        self.template = true;
+        self
+    }
+    fn vars(mut self, v: &'static [&'static str]) -> Self {
+        self.vars = v;
+        self
+    }
 }
 
-const EXPR_HELP: &str = "Colonnes par leur nom (ou `nom avec espaces`). Opérateurs : + - * / % == != < <= > >= && || !. \
-Fonctions : upper, lower, trim, len, concat, contains, starts_with, ends_with, replace, substr, \
-round, floor, ceil, abs, sqrt, pow, min, max, coalesce, if, is_null, number, string.";
+const EXPR_HELP: &str = "Syntaxe JavaScript : $json.colonne, opérateurs (+ - * / % === !== && || ?? … ? … : …), \
+méthodes (.toUpperCase(), .round(2), .includes()…), $now, $('Nœud').first().json.colonne. \
+Ctrl+Espace affiche les suggestions.";
 
 pub fn all() -> Vec<NodeSpec> {
     use Category::*;
@@ -202,9 +221,11 @@ pub fn all() -> Vec<NodeSpec> {
             inputs: vec![],
             params: vec![
                 param("url", "URL", P::String, json!("https://jsonplaceholder.typicode.com/posts"))
+                    .template()
                     .placeholder("https://api.exemple.com/items"),
                 param("headers", "En-têtes", P::Text, json!(""))
-                    .placeholder("Authorization: Bearer …"),
+                    .placeholder("Authorization: Bearer …")
+                    .template(),
                 param("items_path", "Chemin des éléments", P::String, json!(""))
                     .placeholder("data.items"),
                 param("key", "Colonne identifiante", P::String, json!("id"))
@@ -275,10 +296,14 @@ pub fn all() -> Vec<NodeSpec> {
                 param("method", "Méthode", P::Select, json!("GET"))
                     .options(&["GET", "POST", "PUT", "PATCH", "DELETE"]),
                 param("url", "URL", P::String, json!("https://jsonplaceholder.typicode.com/users"))
-                    .placeholder("https://api.exemple.com/items"),
+                    .placeholder("https://api.exemple.com/items")
+                    .template(),
                 param("headers", "En-têtes", P::Text, json!(""))
-                    .placeholder("Authorization: Bearer …\nAccept: application/json"),
-                param("body", "Corps", P::Text, json!("")),
+                    .placeholder("Authorization: Bearer …\nAccept: application/json")
+                    .template(),
+                param("body", "Corps", P::Text, json!(""))
+                    .placeholder("{\"date\": \"{{ $now.toISODate() }}\"}")
+                    .template(),
                 param("items_path", "Chemin des éléments", P::String, json!(""))
                     .placeholder("data.items")
                     .help("Chemin (séparé par des points) vers le tableau dans la réponse. Vide = racine."),
@@ -291,8 +316,8 @@ pub fn all() -> Vec<NodeSpec> {
             description: "Garde les lignes qui respectent une condition.",
             icon: "funnel",
             inputs: vec!["Entrée"],
-            params: vec![param("condition", "Condition", P::Expression, json!("prix > 15"))
-                .placeholder("prix > 10 && categorie == \"livres\"")
+            params: vec![param("condition", "Condition", P::Expression, json!("$json.prix > 15"))
+                .placeholder("$json.prix > 10 && $json.categorie === \"livres\"")
                 .help(EXPR_HELP)],
         },
         NodeSpec {
@@ -304,7 +329,7 @@ pub fn all() -> Vec<NodeSpec> {
             inputs: vec!["Entrée"],
             params: vec![
                 param("column", "Colonne", P::String, json!("total")),
-                param("expression", "Expression", P::Expression, json!("round(prix * quantite, 2)"))
+                param("expression", "Expression", P::Expression, json!("($json.prix * $json.quantite).round(2)"))
                     .help(EXPR_HELP),
             ],
         },
@@ -409,7 +434,7 @@ pub fn all() -> Vec<NodeSpec> {
             inputs: vec![],
             params: vec![
                 credential("postgres"),
-                param("query", "Requête SQL", P::Expression, json!("SELECT * FROM commandes ORDER BY id DESC LIMIT 100")),
+                param("query", "Requête SQL", P::Sql, json!("SELECT * FROM commandes ORDER BY id DESC LIMIT 100")),
                 param("max_rows", "Lignes maximum", P::Number, json!(10000)),
             ],
         },
@@ -437,7 +462,7 @@ pub fn all() -> Vec<NodeSpec> {
             inputs: vec![],
             params: vec![
                 credential("mysql"),
-                param("query", "Requête SQL", P::Expression, json!("SELECT * FROM commandes LIMIT 100")),
+                param("query", "Requête SQL", P::Sql, json!("SELECT * FROM commandes LIMIT 100")),
                 param("max_rows", "Lignes maximum", P::Number, json!(10000)),
             ],
         },
@@ -464,7 +489,7 @@ pub fn all() -> Vec<NodeSpec> {
             inputs: vec![],
             params: vec![
                 credential("oracle"),
-                param("query", "Requête SQL", P::Expression, json!("SELECT * FROM commandes FETCH FIRST 100 ROWS ONLY")),
+                param("query", "Requête SQL", P::Sql, json!("SELECT * FROM commandes FETCH FIRST 100 ROWS ONLY")),
                 param("max_rows", "Lignes maximum", P::Number, json!(10000)),
             ],
         },
@@ -485,8 +510,9 @@ pub fn all() -> Vec<NodeSpec> {
             icon: "file-plus",
             inputs: vec!["Entrée"],
             params: vec![
-                param("name", "Nom du fichier", P::String, json!("export-{date}"))
-                    .help("Variables : {date}, {heure}, {lignes}. L'extension est ajoutée selon le format."),
+                param("name", "Nom du fichier", P::String, json!("export-{{ $now.format('yyyy-MM-dd') }}"))
+                    .template()
+                    .help("L'extension est ajoutée selon le format. Expressions {{ … }} : première ligne de l'entrée, $now…"),
                 param("format", "Format", P::Select, json!("csv")).options(&["csv", "json", "parquet", "excel"]),
             ],
         },
@@ -512,11 +538,18 @@ pub fn all() -> Vec<NodeSpec> {
             params: vec![
                 credential("smtp"),
                 param("mode", "Mode", P::Select, json!("un par ligne")).options(&["un par ligne", "récapitulatif"]),
-                param("to", "Destinataire(s)", P::String, json!("")).placeholder("{{email}} ou equipe@exemple.com")
-                    .help("Plusieurs adresses séparées par des virgules. {{colonne}} insère une valeur de la ligne."),
-                param("subject", "Objet", P::String, json!("Nouvelle commande {{id}}")),
-                param("body", "Message", P::Text, json!("Bonjour,\n\nVoici les informations : {{produit}} × {{quantite}}.\n"))
-                    .help("Variables : {{colonne}} (mode par ligne), {{nb_lignes}} et {{tableau}} (récapitulatif)."),
+                param("to", "Destinataire(s)", P::String, json!(""))
+                    .placeholder("{{ $json.email }} ou equipe@exemple.com")
+                    .template()
+                    .vars(&["nb_lignes", "tableau"])
+                    .help("Plusieurs adresses séparées par des virgules."),
+                param("subject", "Objet", P::String, json!("Nouvelle commande {{ $json.id }}"))
+                    .template()
+                    .vars(&["nb_lignes", "tableau"]),
+                param("body", "Message", P::Text, json!("Bonjour,\n\nVoici les informations : {{ $json.produit }} × {{ $json.quantite }}.\n"))
+                    .template()
+                    .vars(&["nb_lignes", "tableau"])
+                    .help("Par ligne : {{ $json.colonne }}. Récapitulatif : {{ nb_lignes }}, {{ tableau }} et {{ $input.all() … }}."),
                 param("attachment", "Pièce jointe (récapitulatif)", P::Select, json!("aucune")).options(&["aucune", "csv", "excel"]),
             ],
         },
@@ -531,8 +564,10 @@ pub fn all() -> Vec<NodeSpec> {
                 credential("chat_webhook"),
                 param("service", "Service", P::Select, json!("Slack")).options(&["Slack", "Discord", "Microsoft Teams", "Mattermost", "Google Chat"]),
                 param("mode", "Mode", P::Select, json!("récapitulatif")).options(&["récapitulatif", "un par ligne"]),
-                param("message", "Message", P::Text, json!("{{nb_lignes}} nouvelle(s) ligne(s) :\n{{tableau}}"))
-                    .help("Variables : {{colonne}} (un par ligne), {{nb_lignes}} et {{tableau}} (récapitulatif)."),
+                param("message", "Message", P::Text, json!("{{ nb_lignes }} nouvelle(s) ligne(s) :\n{{ tableau }}"))
+                    .template()
+                    .vars(&["nb_lignes", "tableau"])
+                    .help("Par ligne : {{ $json.colonne }}. Récapitulatif : {{ nb_lignes }}, {{ tableau }} et {{ $input.all() … }}."),
             ],
         },
         // ------------------------------------------------------------------ flux

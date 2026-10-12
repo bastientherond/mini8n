@@ -10,6 +10,7 @@ use mini8n_engine::value::{RowAccessor, Value as Cell};
 use rust_xlsxwriter::{Format, Workbook};
 use serde_json::{Map, Value, json};
 
+use super::template::summary;
 use super::{Ctx, str_param, table_of};
 use crate::files;
 
@@ -57,22 +58,25 @@ pub fn to_xlsx(batch: &RecordBatch) -> Result<Vec<u8>, String> {
     wb.save_to_buffer().map_err(err)
 }
 
-fn render_name(template: &str, rows: usize, ext: &str) -> String {
+/// Nom du fichier : expressions `{{ … }}` (première ligne, `$now`…) et anciennes
+/// variables `{date}`, `{heure}`, `{lignes}`.
+fn render_name(template: &str, input: &RecordBatch, ext: &str) -> Result<String, String> {
     let now = Utc::now();
     let base = if template.trim().is_empty() {
         "export-{date}"
     } else {
         template.trim()
     };
+    let base = summary(&[("Nom du fichier", base)], input)?.remove(0);
     let name = base
         .replace("{date}", &now.format("%Y-%m-%d").to_string())
         .replace("{heure}", &now.format("%H-%M-%S").to_string())
-        .replace("{lignes}", &rows.to_string());
-    if name.to_lowercase().ends_with(&format!(".{ext}")) {
+        .replace("{lignes}", &input.num_rows().to_string());
+    Ok(if name.to_lowercase().ends_with(&format!(".{ext}")) {
         name
     } else {
         format!("{name}.{ext}")
-    }
+    })
 }
 
 pub async fn write(
@@ -101,7 +105,7 @@ pub async fn write(
                 .into_bytes(),
         ),
     };
-    let name = render_name(&str_param(p, "name"), input.num_rows(), ext);
+    let name = render_name(&str_param(p, "name"), &input, ext)?;
     let file = files::store(
         &ctx.db,
         ctx.workspace_id,
@@ -236,8 +240,19 @@ mod tests {
 
     #[test]
     fn names_and_delimiters() {
-        assert!(render_name("ventes-{lignes}", 12, "csv").starts_with("ventes-12.csv"));
-        assert_eq!(render_name("rapport.xlsx", 1, "xlsx"), "rapport.xlsx");
+        let input = data::json_to_batch(&json!([{"region": "Nord"}, {"region": "Sud"}])).unwrap();
+        assert_eq!(
+            render_name("ventes-{lignes}", &input, "csv").unwrap(),
+            "ventes-2.csv"
+        );
+        assert_eq!(
+            render_name("rapport.xlsx", &input, "xlsx").unwrap(),
+            "rapport.xlsx"
+        );
+        assert_eq!(
+            render_name("ventes-{{ $json.region.toLowerCase() }}", &input, "csv").unwrap(),
+            "ventes-nord.csv"
+        );
         assert_eq!(sniff_delimiter("a;b;c\n1;2;3"), b';');
         assert_eq!(sniff_delimiter("a,b\n1,2"), b',');
         assert_eq!(sniff_delimiter("a\tb"), b'\t');

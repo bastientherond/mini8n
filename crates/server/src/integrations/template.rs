@@ -1,7 +1,13 @@
-//! Modèles de texte : `{{colonne}}` est remplacé par la valeur de la ligne.
-//! En mode récapitulatif : `{{nb_lignes}}` et `{{tableau}}` (20 premières lignes).
+//! Textes des intégrations avec expressions `{{ … }}` (langage du moteur).
+//! En mode récapitulatif, `nb_lignes` et `tableau` (20 premières lignes) sont
+//! disponibles, et `$json` désigne la première ligne.
 
+use mini8n_engine::arrow::array::RecordBatch;
+use mini8n_engine::expr::{Scope, Template};
+use mini8n_engine::value::{RowAccessor, Value as Scalar};
 use serde_json::{Map, Value};
+
+use super::rows_of;
 
 fn text(v: &Value) -> String {
     match v {
@@ -9,31 +15,6 @@ fn text(v: &Value) -> String {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     }
-}
-
-/// Remplace les `{{nom}}` par les valeurs de `vars` (inconnus : laissés vides).
-pub fn render(template: &str, vars: &Map<String, Value>) -> String {
-    let mut out = String::with_capacity(template.len());
-    let mut rest = template;
-    while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        match after.find("}}") {
-            Some(end) => {
-                let key = after[..end].trim();
-                if let Some(v) = vars.get(key) {
-                    out.push_str(&text(v));
-                }
-                rest = &after[end + 2..];
-            }
-            None => {
-                out.push_str(&rest[start..]);
-                rest = "";
-            }
-        }
-    }
-    out.push_str(rest);
-    out
 }
 
 /// Tableau texte des premières lignes (messages récapitulatifs).
@@ -64,33 +45,87 @@ pub fn table(rows: &[Map<String, Value>], max: usize) -> String {
     out
 }
 
-/// Variables du mode récapitulatif.
-pub fn summary_vars(rows: &[Map<String, Value>]) -> Map<String, Value> {
-    let mut vars = rows.first().cloned().unwrap_or_default();
-    vars.insert("nb_lignes".into(), Value::from(rows.len()));
-    vars.insert("tableau".into(), Value::String(table(rows, 20)));
-    vars
+fn compile(fields: &[(&str, &str)], scope: &Scope) -> Result<Vec<Template>, String> {
+    fields
+        .iter()
+        .map(|(name, src)| Template::compile(src, scope).map_err(|e| format!("{name} : {e}")))
+        .collect()
+}
+
+/// Textes rendus pour chaque ligne de l'entrée (`fields` : nom affiché, gabarit).
+pub fn per_row(fields: &[(&str, &str)], input: &RecordBatch) -> Result<Vec<Vec<String>>, String> {
+    let templates = compile(fields, &Scope::new(Some(input)))?;
+    let rows = RowAccessor::new(input).map_err(|e| e.to_string())?;
+    (0..input.num_rows())
+        .map(|r| {
+            templates
+                .iter()
+                .zip(fields)
+                .map(|(t, (name, _))| {
+                    t.render(Some(&rows), r)
+                        .map_err(|e| format!("{name}, ligne {} : {e}", r + 1))
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Textes rendus une seule fois (mode récapitulatif, nom de fichier…).
+pub fn summary(fields: &[(&str, &str)], input: &RecordBatch) -> Result<Vec<String>, String> {
+    let json_rows = rows_of(input)?;
+    let scope = Scope::new(Some(input))
+        .with_var("nb_lignes", Scalar::Int(input.num_rows() as i64))
+        .with_var("tableau", Scalar::Str(table(&json_rows, 20)));
+    let templates = compile(fields, &scope)?;
+    let rows = RowAccessor::new(input).map_err(|e| e.to_string())?;
+    let rows = (input.num_rows() > 0).then_some(&rows);
+    templates
+        .iter()
+        .zip(fields)
+        .map(|(t, (name, _))| t.render(rows, 0).map_err(|e| format!("{name} : {e}")))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mini8n_engine::data::json_to_batch;
     use serde_json::json;
 
     #[test]
     fn renders() {
-        let row = json!({"nom": "Ada", "n": 3, "vide": null})
-            .as_object()
-            .unwrap()
-            .clone();
-        assert_eq!(
-            render("Bonjour {{ nom }} ({{n}}){{vide}}{{inconnu}} !", &row),
-            "Bonjour Ada (3) !"
-        );
-        assert_eq!(render("{{ouvert", &row), "{{ouvert");
-        let rows = vec![row.clone(), row];
-        let vars = summary_vars(&rows);
-        assert_eq!(render("{{nb_lignes}} lignes", &vars), "2 lignes");
-        assert!(render("{{tableau}}", &vars).starts_with("nom | n | vide\nAda | 3 | "));
+        let input = json_to_batch(&json!([
+            {"nom": "Ada", "n": 3, "vide": null},
+            {"nom": "Alan", "n": 4, "vide": null}
+        ]))
+        .unwrap();
+        let rows = per_row(
+            &[(
+                "Message",
+                "Bonjour {{ $json.nom }} ({{ $json.n * 2 }}){{ $json.vide }} !",
+            )],
+            &input,
+        )
+        .unwrap();
+        assert_eq!(rows[0][0], "Bonjour Ada (6) !");
+        assert_eq!(rows[1][0], "Bonjour Alan (8) !");
+        // Ancienne syntaxe : noms de colonnes nus.
+        assert_eq!(per_row(&[("x", "{{nom}}")], &input).unwrap()[1][0], "Alan");
+
+        let out = summary(
+            &[
+                ("Objet", "{{nb_lignes}} lignes"),
+                ("Corps", "{{ tableau }}"),
+                ("Total", "{{ $input.all().map(i => i.json.n).sum() }}"),
+            ],
+            &input,
+        )
+        .unwrap();
+        assert_eq!(out[0], "2 lignes");
+        assert!(out[1].starts_with("nom | n | vide\nAda | 3 | "));
+        assert_eq!(out[2], "7");
+
+        let e = per_row(&[("Objet", "{{ $json.nmo }}")], &input).unwrap_err();
+        assert!(e.starts_with("Objet : Colonne inconnue"), "{e}");
     }
 }

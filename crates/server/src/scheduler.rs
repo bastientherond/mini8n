@@ -10,6 +10,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use mini8n_engine::arrow::array::UInt32Array;
 use mini8n_engine::arrow::compute::take_record_batch;
+use mini8n_engine::expr::Scope;
 use mini8n_engine::nodes::{Params, http};
 use mini8n_engine::{TriggerEvent, data};
 use serde_json::{Map, Value, json};
@@ -74,7 +75,7 @@ pub async fn run_due(runner: &Runner, workspace: Option<Uuid>) -> Result<(), sql
     let rows: Vec<DueRow> = sqlx::query_as(
         "SELECT t.id, t.workflow_id, t.kind, t.node_id, t.config, t.next_run_at
          FROM triggers t JOIN workflows w ON w.id = t.workflow_id
-         WHERE w.active AND t.next_run_at IS NOT NULL AND t.next_run_at <= now()
+         WHERE w.active AND t.next_run_at IS NOT NULL AND t.next_run_at <= $3
            AND ($2::uuid IS NULL OR t.workspace_id = $2)
          ORDER BY t.next_run_at
          LIMIT $1
@@ -82,6 +83,9 @@ pub async fn run_due(runner: &Runner, workspace: Option<Uuid>) -> Result<(), sql
     )
     .bind(BATCH)
     .bind(workspace)
+    // Même horloge que celle qui calcule `next_run_at` (pas `now()` de PostgreSQL,
+    // qui peut être légèrement décalée).
+    .bind(now)
     .fetch_all(&mut *tx)
     .await?;
     let mut due = Vec::with_capacity(rows.len());
@@ -251,7 +255,10 @@ async fn poll(runner: &Runner, d: &Due) -> Result<(), String> {
         .unwrap_or_default();
 
     let fetched = async {
-        let req = http::build_request(&Params(&d.config)).map_err(|e| e.to_string())?;
+        let config =
+            http::render_params(&Params(&d.config), &["url", "headers"], &Scope::new(None))
+                .map_err(|e| e.to_string())?;
+        let req = http::build_request(&Params(&config)).map_err(|e| e.to_string())?;
         let res = net::fetch(req, &runner.config().net_policy()).await?;
         let items_path = d
             .config

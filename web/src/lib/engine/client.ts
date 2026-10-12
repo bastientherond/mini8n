@@ -1,7 +1,7 @@
 // Client RPC vers le Worker qui héberge le moteur WebAssembly.
 // Si le moteur plante ou dépasse le délai imparti, le Worker est recréé.
 
-import type { EngineWorkflow, NodeSpec, Preview, RunOutput } from './types';
+import type { EngineWorkflow, ExprDoc, NodeSpec, Preview, RunOutput, Trial, TrialContext } from './types';
 import type { Request } from './worker';
 
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> };
@@ -56,6 +56,46 @@ function call<T>(req: DistributiveOmit<Request, 'id'>, timeoutMs = CALL_TIMEOUT_
 	});
 }
 
+/** Clés des tables Parquet transmises au Worker pour les essais d'expressions. */
+const tableKeys = new WeakMap<Uint8Array, string>();
+const sentTables = new Set<string>();
+let tableSeq = 0;
+
+function keyFor(bytes: Uint8Array): string {
+	let key = tableKeys.get(bytes);
+	if (!key) {
+		key = `t${++tableSeq}`;
+		tableKeys.set(bytes, key);
+	}
+	return key;
+}
+
+let docs: Promise<ExprDoc[]> | null = null;
+
+async function tryExpression(src: string, template: boolean, ctx: TrialContext): Promise<Trial> {
+	const byKey = new Map<string, Uint8Array>();
+	const input = ctx.input ? keyFor(ctx.input) : null;
+	if (input && ctx.input) byKey.set(input, ctx.input);
+	const nodes: Record<string, string> = {};
+	for (const [name, bytes] of Object.entries(ctx.nodes ?? {})) {
+		const key = keyFor(bytes);
+		nodes[name] = key;
+		byKey.set(key, bytes);
+	}
+	const context = JSON.stringify({ input, nodes, vars: ctx.vars ?? [], row: ctx.row ?? 0 });
+	const keys = [...byKey.keys()];
+	const send = (force: string[]) => {
+		const tables: Record<string, Uint8Array> = {};
+		for (const [k, b] of byKey) if (force.includes(k) || !sentTables.has(k)) tables[k] = b;
+		for (const k of Object.keys(tables)) sentTables.add(k);
+		return call<Trial | { missing: string[] }>({ method: 'tryExpression', src, template, context, tables, keys });
+	};
+	let out = await send([]);
+	if ('missing' in out) out = await send(out.missing);
+	if ('missing' in out) throw new Error('Données indisponibles');
+	return out;
+}
+
 export const engine = {
 	catalog: () => call<NodeSpec[]>({ method: 'catalog' }),
 	version: () => call<string>({ method: 'version' }),
@@ -65,4 +105,10 @@ export const engine = {
 		call<Preview>({ method: 'preview', bytes, offset, limit }),
 	toCsv: (bytes: Uint8Array) => call<string>({ method: 'csv', bytes }),
 	toJson: (bytes: Uint8Array) => call<string>({ method: 'json', bytes }),
+	/** Documentation du langage d'expressions (chargée une fois). */
+	expressionDocs: () => (docs ??= call<ExprDoc[]>({ method: 'expressionDocs' }).catch((e) => {
+		docs = null;
+		throw e;
+	})),
+	tryExpression,
 };

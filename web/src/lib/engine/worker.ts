@@ -11,7 +11,19 @@ export type Request =
 	| { id: number; method: 'version' }
 	| { id: number; method: 'run'; workflow: string; target?: string; workspaceId?: string }
 	| { id: number; method: 'preview'; bytes: Uint8Array; offset: number; limit: number }
-	| { id: number; method: 'csv' | 'json'; bytes: Uint8Array };
+	| { id: number; method: 'csv' | 'json'; bytes: Uint8Array }
+	| { id: number; method: 'expressionDocs' }
+	| {
+			id: number;
+			method: 'tryExpression';
+			src: string;
+			template: boolean;
+			context: string;
+			/** Tables à charger avant l'essai (clé → Parquet). */
+			tables: Record<string, Uint8Array>;
+			/** Clés utilisées par le contexte. */
+			keys: string[];
+	  };
 
 const ready = init({ module_or_path: wasmUrl });
 
@@ -102,6 +114,16 @@ self.onmessage = async (event: MessageEvent<Request>) => {
 			case 'json':
 				result = engine.toJson(req.bytes);
 				break;
+			case 'expressionDocs':
+				result = JSON.parse(engine.expressionDocs());
+				break;
+			case 'tryExpression': {
+				for (const [key, bytes] of Object.entries(req.tables)) engine.loadTable(key, bytes);
+				// Table évincée du cache : le client la renverra.
+				const missing = req.keys.filter((k) => !engine.hasTable(k));
+				result = missing.length ? { missing } : JSON.parse(engine.tryExpression(req.src, req.template, req.context));
+				break;
+			}
 		}
 		self.postMessage({ id: req.id, ok: true, result }, { transfer });
 	} catch (err) {

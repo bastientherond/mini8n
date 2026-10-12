@@ -12,8 +12,24 @@ use arrow::array::RecordBatch;
 use serde_json::{Map, Value as Json};
 
 use crate::error::{Result, fail};
+use crate::expr::Scope;
 use crate::host::Host;
 use crate::workflow::Node;
+
+/// Contexte d'exécution d'un nœud : sorties des autres nœuds (`$('Nom')`).
+pub struct NodeCtx<'a> {
+    pub lookup: &'a dyn Fn(&str) -> Option<RecordBatch>,
+    pub node_names: Vec<String>,
+}
+
+impl NodeCtx<'_> {
+    pub fn scope<'s>(&'s self, input: Option<&'s RecordBatch>) -> Scope<'s> {
+        let mut scope = Scope::new(input);
+        scope.nodes = Some(self.lookup);
+        scope.node_names = self.node_names.clone();
+        scope
+    }
+}
 
 /// Accès typé aux paramètres d'un nœud.
 pub struct Params<'a>(pub &'a Map<String, Json>);
@@ -71,6 +87,7 @@ pub async fn execute(
     node: &Node,
     inputs: Vec<RecordBatch>,
     host: &dyn Host,
+    ctx: &NodeCtx<'_>,
 ) -> Result<RecordBatch> {
     let p = Params(&node.params);
     let mut inputs = inputs.into_iter();
@@ -82,9 +99,9 @@ pub async fn execute(
     match node.kind.as_str() {
         "manual" => sources::manual(&p),
         "csv" => sources::csv(&p),
-        "http" => http::request(&p, host).await,
-        "filter" => transform::filter(&p, input()?),
-        "formula" => transform::formula(&p, input()?),
+        "http" => http::request(&p, host, &ctx.scope(None)).await,
+        "filter" => transform::filter(&p, input()?, ctx),
+        "formula" => transform::formula(&p, input()?, ctx),
         "select" => transform::select(&p, input()?),
         "rename" => transform::rename(&p, input()?),
         "sort" => transform::sort(&p, input()?),

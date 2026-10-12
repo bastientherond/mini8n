@@ -353,5 +353,25 @@ async fn run_node(
             None => Outcome::Skipped("Nœud désactivé".into()),
         });
     }
-    nodes::execute(node, inputs, host).await.map(Outcome::Data)
+    // `$('Nom')` : sortie d'un nœud déjà exécuté, décodée à la demande.
+    let lookup = |name: &str| -> Option<RecordBatch> {
+        let other = wf
+            .nodes
+            .iter()
+            .find(|n| n.name == name && results.contains_key(&n.id))?;
+        let bytes = results.get(&other.id)?.parquet.as_ref()?;
+        data::from_parquet(bytes.clone()).ok()
+    };
+    let ctx = nodes::NodeCtx {
+        lookup: &lookup,
+        node_names: wf
+            .nodes
+            .iter()
+            .filter(|n| results.contains_key(&n.id))
+            .map(|n| n.name.clone())
+            .collect(),
+    };
+    nodes::execute(node, inputs, host, &ctx)
+        .await
+        .map(Outcome::Data)
 }

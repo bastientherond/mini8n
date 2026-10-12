@@ -16,6 +16,9 @@
 	import { formatBytes } from '$lib/icons';
 	import { resources } from '$lib/resources.svelte';
 	import CredentialDialog from './CredentialDialog.svelte';
+	import CodeEditor from './code/CodeEditor.svelte';
+	import ExpressionField from './code/ExpressionField.svelte';
+	import { buildContext, emptyContext } from '$lib/expressions/context';
 	import type { ParamSpec } from '$lib/engine/types';
 	import { wf } from '$lib/workflow.svelte';
 
@@ -23,15 +26,29 @@
 		param,
 		value,
 		columns = [],
+		nodeId = '',
 		nodeKind = '',
 		onchange,
 	}: {
 		param: ParamSpec;
 		value: unknown;
 		columns?: string[];
+		nodeId?: string;
 		nodeKind?: string;
 		onchange: (value: unknown) => void;
 	} = $props();
+
+	/** Champ en code : expression, texte à `{{ … }}`, SQL ou JSON. */
+	const codeKind = $derived(
+		param.type === 'expression'
+			? 'expression'
+			: param.template && (param.type === 'string' || param.type === 'text')
+				? 'template'
+				: param.type === 'sql' || param.type === 'json'
+					? param.type
+					: null,
+	);
+	const context = $derived(codeKind === 'expression' || codeKind === 'template' ? buildContext(nodeId, param) : emptyContext);
 
 	/** URL publique d'un jeton (webhook : API ; formulaire : page de l'application). */
 	const publicUrl = $derived.by(() => {
@@ -85,17 +102,12 @@
 		}
 	});
 
-	/** Les listes de colonnes et les expressions proposent les colonnes en entrée. */
+	/** Les listes de colonnes proposent les colonnes en entrée. */
 	const COLUMN_LISTS = new Set(['columns', 'by', 'group_by', 'left_key', 'right_key']);
-	const acceptsColumns = $derived(param.type === 'expression' || COLUMN_LISTS.has(param.name));
+	const acceptsColumns = $derived(COLUMN_LISTS.has(param.name));
 
 	function insertColumn(name: string) {
-		if (param.type === 'expression') {
-			const ref = /^[\p{L}_$][\p{L}\p{N}_.$]*$/u.test(name) ? name : `\`${name}\``;
-			onchange(text && !/\s$/.test(text) ? `${text} ${ref}` : text + ref);
-		} else {
-			onchange(text.trim() ? `${text.replace(/,\s*$/, '')}, ${name}` : name);
-		}
+		onchange(text.trim() ? `${text.replace(/,\s*$/, '')}, ${name}` : name);
 	}
 </script>
 
@@ -109,7 +121,28 @@
 		<Label for={fieldId}>{param.label}</Label>
 	{/if}
 
-	{#if param.type === 'string'}
+	{#if codeKind === 'expression' || codeKind === 'template'}
+		<ExpressionField
+			id={fieldId}
+			label={param.label}
+			value={text}
+			onchange={(v) => onchange(v)}
+			template={codeKind === 'template'}
+			singleLine={param.type === 'string'}
+			placeholder={param.placeholder}
+			{context}
+		/>
+	{:else if codeKind === 'sql' || codeKind === 'json'}
+		<CodeEditor
+			id={fieldId}
+			value={text}
+			onchange={(v) => onchange(v)}
+			mode={codeKind}
+			placeholder={param.placeholder}
+			ariaLabel={param.label}
+			class={codeKind === 'json' ? 'mini8n-code-tall' : 'mini8n-code-medium'}
+		/>
+	{:else if param.type === 'string'}
 		<Input id={fieldId} value={text} placeholder={param.placeholder} oninput={(e) => onchange(e.currentTarget.value)} />
 	{:else if param.type === 'number'}
 		<Input

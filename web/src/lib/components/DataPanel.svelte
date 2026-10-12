@@ -15,6 +15,9 @@
 	import { formatBytes, formatCount } from '$lib/icons';
 	import type { Snippet } from 'svelte';
 	import { wf } from '$lib/workflow.svelte';
+	import { columnRef } from '$lib/expressions/context';
+	import { FIELD_MIME } from './code/CodeEditor.svelte';
+	import GripVertical from '@lucide/svelte/icons/grip-vertical';
 
 	const PAGE = 50;
 
@@ -22,12 +25,23 @@
 		nodeId,
 		label = 'Sortie',
 		emptyAction,
+		fieldBase,
 	}: {
 		nodeId: string | null;
 		label?: string;
 		/** Action proposée quand le nœud n'a pas encore de données (ex. bouton Exécuter). */
 		emptyAction?: Snippet;
+		/** Colonnes glissables vers les expressions, préfixées par cette base (`$json`). */
+		fieldBase?: string;
 	} = $props();
+
+	function dragColumn(event: DragEvent, name: string) {
+		if (!fieldBase || !event.dataTransfer) return;
+		const ref = columnRef(name, fieldBase);
+		event.dataTransfer.setData(FIELD_MIME, ref);
+		event.dataTransfer.setData('text/plain', ref);
+		event.dataTransfer.effectAllowed = 'copy';
+	}
 
 	const node = $derived(nodeId ? (wf.nodes.find((n) => n.id === nodeId) ?? null) : null);
 	const result = $derived(node ? wf.results[node.id] : undefined);
@@ -169,8 +183,18 @@
 									<Table.Row>
 										<Table.Head class="text-muted-foreground w-12 text-right">#</Table.Head>
 										{#each preview.columns as col (col.name)}
-											<Table.Head>
-												<div class="font-medium">{col.name}</div>
+											<Table.Head
+												draggable={fieldBase ? 'true' : undefined}
+												ondragstart={(e: DragEvent) => dragColumn(e, col.name)}
+												class={fieldBase ? 'group/col cursor-grab active:cursor-grabbing' : ''}
+												title={fieldBase ? `Glisser vers un champ : ${columnRef(col.name, fieldBase)}` : undefined}
+											>
+												<div class="flex items-center gap-1 font-medium">
+													{#if fieldBase}<GripVertical
+															class="text-muted-foreground/50 group-hover/col:text-muted-foreground -ml-1 size-3 shrink-0"
+														/>{/if}
+													{col.name}
+												</div>
 												<div class="text-muted-foreground font-mono text-[10px] font-normal">{col.type}</div>
 											</Table.Head>
 										{/each}

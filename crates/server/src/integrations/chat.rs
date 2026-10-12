@@ -5,8 +5,8 @@ use mini8n_engine::HttpRequest;
 use mini8n_engine::arrow::array::RecordBatch;
 use serde_json::{Map, Value, json};
 
-use super::template::{render, summary_vars};
-use super::{Ctx, rows_of, str_param, table_of};
+use super::template::{per_row, summary};
+use super::{Ctx, str_param, table_of};
 use crate::net;
 
 const MAX_PER_ROW: usize = 50;
@@ -48,21 +48,19 @@ pub async fn send(
     let url = str_param(&c, "url");
     let service = str_param(p, "service");
     let template = str_param(p, "message");
-    let rows = rows_of(&input)?;
-    let mut report = Vec::new();
-    if str_param(p, "mode") == "un par ligne" {
-        if rows.len() > MAX_PER_ROW {
+    let fields = [("Message", template.as_str())];
+    let texts: Vec<String> = if str_param(p, "mode") == "un par ligne" {
+        if input.num_rows() > MAX_PER_ROW {
             return Err(format!(
                 "{MAX_PER_ROW} messages au maximum par exécution (utilisez le mode récapitulatif)"
             ));
         }
-        for row in &rows {
-            let text = render(&template, row);
-            post(ctx, &url, &service, &text).await?;
-            report.push(json!({ "service": service, "message": text, "statut": "envoyé" }));
-        }
+        per_row(&fields, &input)?.into_iter().flatten().collect()
     } else {
-        let text = render(&template, &summary_vars(&rows));
+        summary(&fields, &input)?
+    };
+    let mut report = Vec::new();
+    for text in texts {
         post(ctx, &url, &service, &text).await?;
         report.push(json!({ "service": service, "message": text, "statut": "envoyé" }));
     }

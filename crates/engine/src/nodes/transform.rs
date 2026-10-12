@@ -7,24 +7,29 @@ use arrow::compute::{
 };
 use arrow::datatypes::{Field, Schema};
 
-use super::{Params, column_indices};
+use super::{NodeCtx, Params, column_indices};
 use crate::error::{Result, fail};
-use crate::expr::Expr;
+use crate::expr::{Expr, ExprError};
 use crate::value::{RowAccessor, Value, values_to_array};
 
-fn with_row<T>(msg: crate::error::EngineError, row: usize) -> Result<T> {
-    fail(format!("Ligne {} : {msg}", row + 1))
+fn with_row<T>(e: ExprError, row: usize) -> Result<T> {
+    fail(format!("Ligne {} : {}", row + 1, e.message))
 }
 
-pub fn filter(p: &Params, batch: RecordBatch) -> Result<RecordBatch> {
+fn compile(src: &str, batch: &RecordBatch, ctx: &NodeCtx) -> Result<Expr> {
+    Expr::compile(src, &ctx.scope(Some(batch)))
+        .or_else(|e| fail(format!("Expression : {}", e.message)))
+}
+
+pub fn filter(p: &Params, batch: RecordBatch, ctx: &NodeCtx) -> Result<RecordBatch> {
     let cond = p.str("condition");
     if cond.trim().is_empty() {
         return Ok(batch);
     }
-    let expr = Expr::compile(&cond, &batch.schema())?;
+    let expr = compile(&cond, &batch, ctx)?;
     let rows = RowAccessor::new(&batch)?;
     let mask = (0..batch.num_rows())
-        .map(|r| match expr.eval(&rows, r) {
+        .map(|r| match expr.eval(Some(&rows), r) {
             Ok(v) => Ok(Some(v.truthy())),
             Err(e) => with_row(e, r),
         })
@@ -32,15 +37,15 @@ pub fn filter(p: &Params, batch: RecordBatch) -> Result<RecordBatch> {
     Ok(filter_record_batch(&batch, &mask)?)
 }
 
-pub fn formula(p: &Params, batch: RecordBatch) -> Result<RecordBatch> {
+pub fn formula(p: &Params, batch: RecordBatch, ctx: &NodeCtx) -> Result<RecordBatch> {
     let name = p.str("column").trim().to_string();
     if name.is_empty() {
         return fail("Nom de colonne requis");
     }
-    let expr = Expr::compile(&p.str("expression"), &batch.schema())?;
+    let expr = compile(&p.str("expression"), &batch, ctx)?;
     let rows = RowAccessor::new(&batch)?;
     let values = (0..batch.num_rows())
-        .map(|r| expr.eval(&rows, r).or_else(|e| with_row(e, r)))
+        .map(|r| expr.eval_value(Some(&rows), r).or_else(|e| with_row(e, r)))
         .collect::<Result<Vec<Value>>>()?;
     let array = values_to_array(&values);
     let field = Arc::new(Field::new(&name, array.data_type().clone(), true));

@@ -250,16 +250,44 @@ que le nœud et ses ancêtres.
 
 ## Expressions
 
-```
-prix * quantite > 100 && categorie == "livres"
-upper(trim(nom)) + " (" + coalesce(string(age), "?") + ")"
-if(stock > 0, "dispo", "rupture")
-`code postal` == "75001"
+Les expressions sont un sous-ensemble de JavaScript, comme dans n8n, évalué par le
+moteur Rust (aucun moteur JavaScript n'est embarqué : pas de boucle infinie ni d'accès
+au système possible).
+
+```js
+$json.prix * $json.quantite > 100 && $json.categorie === "livres"
+$json.nom.trim().toUpperCase() + " (" + ($json.age ?? "?") + ")"
+$json.stock > 0 ? "dispo" : "rupture"
+$json["code postal"].startsWith("75")
+`Commande ${$json.id} du ${$now.format("dd/MM/yyyy")}`
+$input.all().map(i => i.json.montant).sum()
+$('Clients').first().json.email
+$json.date.toDate().plus(30, "days").toISODate()
 ```
 
-Opérateurs `+ - * / %`, `== != < <= > >=`, `&& || !` (ou `and or not`).
-Fonctions : `upper lower trim len concat contains starts_with ends_with replace substr
-round floor ceil abs sqrt pow min max coalesce if is_null number string`.
+- **Données** : `$json` (ligne en cours ; colonnes aplaties `adresse.ville` accessibles en
+  `$json.adresse.ville`), `$input.first()` / `.last()` / `.all()` / `.item`,
+  `$('Nom du nœud')` (sortie d'un autre nœud exécuté), `$index`, `$now`, `$today`.
+- **Syntaxe** : opérateurs `+ - * / % **`, `=== !== == != < <= > >=`, `&& || ! ??`,
+  ternaire `a ? b : c`, gabarits `` `…${x}…` ``, tableaux et objets littéraux,
+  fonctions fléchées en argument (`liste.filter(x => x > 1)`), `?.`, commentaires.
+- **Méthodes** : texte (`toUpperCase`, `includes`, `replaceAll`, `split`, `padStart`,
+  `toNumber`, `toDate`, `isEmail`…), nombres (`toFixed`, `round(2)`, `toLocaleString`…),
+  listes (`map`, `filter`, `find`, `reduce`, `join`, `sum`, `average`, `unique`, `pluck`…),
+  dates (`format('EEEE d MMMM')`, `plus`, `minus`, `startOf`, `diff`, `year`, `weekday`…),
+  `Math.*`, `JSON.stringify/parse`, `Object.keys`. La liste complète, documentée et testée,
+  est dans [`crates/engine/src/expr/docs.rs`](crates/engine/src/expr/docs.rs).
+- **Dans les champs texte** (URL, en-têtes et corps HTTP, e-mails, messages, nom de fichier),
+  les expressions s'écrivent entre `{{ … }}` : `Bonjour {{ $json.prenom }} !`.
+- L'ancienne syntaxe reste acceptée : colonnes nues (`prix > 15`) et fonctions
+  (`upper(nom)`, `round(x, 2)`, `if(c, a, b)`…).
+
+Dans l'éditeur (CodeMirror), chaque champ propose l'autocomplétion contextuelle
+(colonnes avec leur type et une valeur d'exemple, méthodes selon le type de la valeur,
+autres nœuds), souligne les erreurs et affiche le résultat en direct, ligne par ligne.
+Les colonnes du panneau d'entrée peuvent être glissées dans un champ, et le bouton
+d'agrandissement ouvre un éditeur plein écran avec l'explorateur des données disponibles.
+Garde-fous : longueur, profondeur, nombre d'opérations et taille des résultats bornés.
 
 ## Bibliothèques (toutes open source)
 
@@ -272,11 +300,12 @@ round floor ceil abs sqrt pow min max coalesce if is_null number string`.
 | [Svelte Flow](https://svelteflow.dev) (`@xyflow/svelte`) | MIT | canevas de nœuds |
 | [shadcn-svelte](https://shadcn-svelte.com) + bits-ui | MIT | composants UI |
 | Tailwind CSS, clsx, tailwind-merge, Lucide | MIT / ISC | styles, icônes |
+| [CodeMirror 6](https://codemirror.net) | MIT | éditeur de code (expressions, SQL, JSON) |
 | [axum](https://github.com/tokio-rs/axum), tokio, tower-http | MIT | API HTTP |
 | [sqlx](https://github.com/launchbadge/sqlx) | MIT / Apache-2.0 | PostgreSQL, migrations |
 | argon2, sha2, getrandom (RustCrypto) | MIT / Apache-2.0 | hachage, jetons |
 | [reqwest](https://github.com/seanmonstar/reqwest) (rustls) | MIT / Apache-2.0 | requêtes HTTP des workflows côté serveur |
-| chrono, chrono-tz | MIT / Apache-2.0 | planification, fuseaux horaires |
+| chrono, chrono-tz | MIT / Apache-2.0 | planification, fuseaux horaires, dates des expressions |
 | aes-gcm, base64 (RustCrypto) | MIT / Apache-2.0 | chiffrement des identifiants |
 | sqlx (PostgreSQL, MySQL) | MIT / Apache-2.0 | intégrations bases de données |
 | [node-oracledb](https://github.com/oracle/node-oracledb) (mode thin) | Apache-2.0 / UPL-1.0 | intégration Oracle, sans client propriétaire |

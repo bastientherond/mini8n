@@ -1,8 +1,11 @@
 use arrow::array::RecordBatch;
 
+use serde_json::{Map, Value as Json};
+
 use super::Params;
 use crate::data::json_to_batch;
 use crate::error::{Result, fail};
+use crate::expr::Scope;
 use crate::host::{Host, HttpRequest};
 
 pub const MAX_RESPONSE_BYTES: usize = 50 * 1024 * 1024;
@@ -92,8 +95,27 @@ pub fn response_to_batch(status: u16, text: String, items_path: &str) -> Result<
     }
 }
 
+/// Paramètres acceptant des expressions `{{ … }}`.
+pub const TEMPLATED: [&str; 3] = ["url", "headers", "body"];
+
+/// Remplace les expressions `{{ … }}` des paramètres concernés.
+pub fn render_params(p: &Params, keys: &[&str], scope: &Scope) -> Result<Map<String, Json>> {
+    let mut out = p.0.clone();
+    for key in keys {
+        let text = p.str(key);
+        if crate::expr::has_expressions(&text) {
+            let rendered = crate::expr::render_once(&text, scope)
+                .map_err(|e| crate::error::EngineError::Msg(format!("{key} : {}", e.message)))?;
+            out.insert((*key).to_string(), Json::String(rendered));
+        }
+    }
+    Ok(out)
+}
+
 /// Exécute la requête décrite par les paramètres et renvoie la table obtenue.
-pub async fn request(p: &Params<'_>, host: &dyn Host) -> Result<RecordBatch> {
+pub async fn request(p: &Params<'_>, host: &dyn Host, scope: &Scope<'_>) -> Result<RecordBatch> {
+    let params = render_params(p, &TEMPLATED, scope)?;
+    let p = &Params(&params);
     let req = build_request(p)?;
     let (status, text) = send(req, host).await?;
     response_to_batch(status, text, &p.str("items_path"))

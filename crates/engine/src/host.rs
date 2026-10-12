@@ -80,6 +80,17 @@ pub fn now_ms() -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Décalage horaire local en minutes (UTC+2 → 120).
+#[cfg(target_arch = "wasm32")]
+pub fn local_offset_min() -> i32 {
+    -(js_sys::Date::new_0().get_timezone_offset() as i32)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn local_offset_min() -> i32 {
+    chrono::Local::now().offset().local_minus_utc() / 60
+}
+
 /// Date ISO 8601 (UTC) à partir d'un horodatage Unix en millisecondes.
 pub fn iso_from_ms(ms: f64) -> String {
     let total_secs = (ms / 1000.0).floor() as i64;

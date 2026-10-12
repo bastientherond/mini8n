@@ -194,3 +194,94 @@ pub fn to_json(parquet: Vec<u8>) -> std::result::Result<String, JsValue> {
     let json = data::batch_to_json(&batch).map_err(js_err)?;
     serde_json::to_string_pretty(&json).map_err(js_err)
 }
+
+/// Documentation du langage d'expressions (autocomplétion de l'éditeur), en JSON.
+#[wasm_bindgen(js_name = expressionDocs)]
+pub fn expression_docs() -> String {
+    serde_json::to_string(crate::expr::docs::DOCS).unwrap_or_else(|_| "[]".into())
+}
+
+/// Tables décodées pour les essais d'expressions (les plus récentes en fin de liste).
+const TABLE_CACHE: usize = 24;
+
+thread_local! {
+    static TABLES: std::cell::RefCell<Vec<(String, arrow::array::RecordBatch)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn cached(key: &str) -> Option<arrow::array::RecordBatch> {
+    TABLES.with(|t| {
+        t.borrow()
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, b)| b.clone())
+    })
+}
+
+/// Garde en mémoire une table Parquet sous une clé (évite de la décoder à chaque frappe).
+#[wasm_bindgen(js_name = loadTable)]
+pub fn load_table(key: String, parquet: Vec<u8>) -> std::result::Result<(), JsValue> {
+    let batch = data::from_parquet(parquet).map_err(js_err)?;
+    TABLES.with(|t| {
+        let mut t = t.borrow_mut();
+        t.retain(|(k, _)| *k != key);
+        t.push((key, batch));
+        let excess = t.len().saturating_sub(TABLE_CACHE);
+        t.drain(..excess);
+    });
+    Ok(())
+}
+
+#[wasm_bindgen(js_name = hasTable)]
+pub fn has_table(key: String) -> bool {
+    cached(&key).is_some()
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct TrialContext {
+    /// Clé de la table en entrée.
+    input: Option<String>,
+    /// Nom du nœud → clé de sa table.
+    nodes: std::collections::BTreeMap<String, String>,
+    vars: Vec<(String, serde_json::Value)>,
+    row: usize,
+}
+
+/// Position UTF-16 (JavaScript) d'une position en octets.
+fn utf16_offset(src: &str, byte: usize) -> usize {
+    src.get(..byte.min(src.len()))
+        .map_or(0, |s| s.encode_utf16().count())
+}
+
+/// Essaie une expression (`template = false`) ou un texte `{{ … }}` sur une ligne.
+/// Retourne `{ ok, value, kind, error, from, to, rows }` (JSON, positions UTF-16).
+#[wasm_bindgen(js_name = tryExpression)]
+pub fn try_expression(src: String, template: bool, context: String) -> String {
+    let cx: TrialContext = serde_json::from_str(&context).unwrap_or_default();
+    let input = cx.input.as_deref().and_then(cached);
+    let lookup = |name: &str| cx.nodes.get(name).and_then(|k| cached(k));
+    let mut scope = crate::expr::Scope::new(input.as_ref());
+    scope.nodes = Some(&lookup);
+    scope.node_names = cx.nodes.keys().cloned().collect();
+    for (name, v) in &cx.vars {
+        let value = match v {
+            serde_json::Value::Number(n) => n
+                .as_i64()
+                .map(crate::value::Value::Int)
+                .unwrap_or_else(|| crate::value::Value::Float(n.as_f64().unwrap_or(0.0))),
+            serde_json::Value::String(s) => crate::value::Value::Str(s.clone()),
+            serde_json::Value::Bool(b) => crate::value::Value::Bool(*b),
+            _ => crate::value::Value::Null,
+        };
+        scope.vars.push((name.clone(), value));
+    }
+    let trial = crate::expr::trial(&src, template, &scope, cx.row);
+    let mut out = serde_json::to_value(&trial).unwrap_or_default();
+    if let (Some(span), Some(obj)) = (trial.span, out.as_object_mut()) {
+        obj.remove("span");
+        obj.insert("from".into(), utf16_offset(&src, span.start).into());
+        obj.insert("to".into(), utf16_offset(&src, span.end).into());
+    }
+    out.to_string()
+}

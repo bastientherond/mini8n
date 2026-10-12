@@ -4,6 +4,7 @@ export type ParamType =
 	| 'string'
 	| 'text'
 	| 'expression'
+	| 'sql'
 	| 'json'
 	| 'number'
 	| 'boolean'
@@ -23,6 +24,10 @@ export interface ParamSpec {
 	help?: string;
 	/** Type d'identifiant attendu (paramètres `credential`). */
 	credential?: string;
+	/** Le texte accepte des expressions `{{ … }}`. */
+	template?: boolean;
+	/** Variables propres à ce paramètre (ex. `nb_lignes`). */
+	vars?: string[];
 }
 
 export type Category = 'trigger' | 'source' | 'transform' | 'combine' | 'flow' | 'integration';
@@ -80,4 +85,39 @@ export interface Preview {
 export interface EngineWorkflow {
 	nodes: { id: string; kind: string; name: string; params: Record<string, unknown>; disabled: boolean }[];
 	edges: { source: string; target: string; input: number }[];
+}
+
+/** Entrée de la documentation du langage d'expressions (voir crates/engine/src/expr/docs.rs). */
+export interface ExprDoc {
+	name: string;
+	kind: 'variable' | 'function' | 'method' | 'property' | 'constant';
+	/** global, string, number, list, object, date, any, Math, JSON, Object, input, item, legacy. */
+	on: string;
+	args?: string;
+	returns: string;
+	info: string;
+	example: string;
+	result?: string;
+}
+
+/** Données disponibles pour essayer une expression. */
+export interface TrialContext {
+	/** Table en entrée (Parquet). */
+	input?: Uint8Array | null;
+	/** Sorties des autres nœuds, par nom. */
+	nodes?: Record<string, Uint8Array>;
+	vars?: [string, unknown][];
+	row?: number;
+}
+
+export interface Trial {
+	ok: boolean;
+	value?: unknown;
+	/** string, number, boolean, list, object, date, null. */
+	kind?: string;
+	error?: string;
+	/** Position de l'erreur (UTF-16). */
+	from?: number;
+	to?: number;
+	rows: number;
 }

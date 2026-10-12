@@ -10,8 +10,8 @@ use mini8n_engine::arrow::array::RecordBatch;
 use mini8n_engine::data;
 use serde_json::{Map, Value, json};
 
-use super::template::{render, summary_vars};
-use super::{Ctx, rows_of, str_param, table_of};
+use super::template::{per_row, summary};
+use super::{Ctx, str_param, table_of};
 
 const MAX_PER_ROW: usize = 100;
 
@@ -89,17 +89,34 @@ pub async fn send(
     p: &Map<String, Value>,
     input: RecordBatch,
 ) -> Result<RecordBatch, String> {
-    let rows = rows_of(&input)?;
-    let (mailer, from) = transport(ctx, p).await?;
     let (to_t, subject_t, body_t) = (
         str_param(p, "to"),
         str_param(p, "subject"),
         str_param(p, "body"),
     );
+    let fields = [
+        ("Destinataire(s)", to_t.as_str()),
+        ("Objet", subject_t.as_str()),
+        ("Message", body_t.as_str()),
+    ];
+    let summary_mode = str_param(p, "mode") == "récapitulatif";
+    if !summary_mode && input.num_rows() > MAX_PER_ROW {
+        return Err(format!(
+            "{MAX_PER_ROW} e-mails au maximum par exécution (utilisez le mode récapitulatif)"
+        ));
+    }
+    // Textes rendus avant tout envoi : une erreur d'expression n'envoie rien.
+    let texts = if summary_mode {
+        vec![summary(&fields, &input)?]
+    } else {
+        per_row(&fields, &input)?
+    };
+    let (mailer, from) = transport(ctx, p).await?;
     let mut report = Vec::new();
 
-    if str_param(p, "mode") == "récapitulatif" {
-        let vars = summary_vars(&rows);
+    if summary_mode {
+        let [to, subject, body] = <[String; 3]>::try_from(texts[0].clone())
+            .map_err(|_| "textes incomplets".to_string())?;
         let attachment = match str_param(p, "attachment").as_str() {
             "csv" => Some((
                 "donnees.csv".to_string(),
@@ -115,33 +132,18 @@ pub async fn send(
             )),
             _ => None,
         };
-        let to = render(&to_t, &vars);
-        let subject = render(&subject_t, &vars);
-        let msg = build(
-            &from,
-            recipients(&to)?,
-            &subject,
-            render(&body_t, &vars),
-            attachment,
-        )?;
+        let msg = build(&from, recipients(&to)?, &subject, body, attachment)?;
         mailer
             .send(msg)
             .await
             .map_err(|e| format!("envoi impossible : {e}"))?;
         report.push(json!({ "destinataire": to, "objet": subject, "statut": "envoyé" }));
     } else {
-        if rows.len() > MAX_PER_ROW {
-            return Err(format!(
-                "{MAX_PER_ROW} e-mails au maximum par exécution (utilisez le mode récapitulatif)"
-            ));
-        }
         let mut sent = 0;
-        for row in &rows {
-            let to = render(&to_t, row);
-            let subject = render(&subject_t, row);
-            let status = match recipients(&to)
-                .and_then(|r| build(&from, r, &subject, render(&body_t, row), None))
-            {
+        for row in texts {
+            let [to, subject, body] =
+                <[String; 3]>::try_from(row).map_err(|_| "textes incomplets".to_string())?;
+            let status = match recipients(&to).and_then(|r| build(&from, r, &subject, body, None)) {
                 Ok(msg) => match mailer.send(msg).await {
                     Ok(_) => {
                         sent += 1;
@@ -153,7 +155,7 @@ pub async fn send(
             };
             report.push(json!({ "destinataire": to, "objet": subject, "statut": status }));
         }
-        if sent == 0 && !rows.is_empty() {
+        if sent == 0 && input.num_rows() > 0 {
             return Err(format!(
                 "Aucun e-mail envoyé ({})",
                 report[0]["statut"].as_str().unwrap_or_default()

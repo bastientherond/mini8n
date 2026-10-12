@@ -133,7 +133,11 @@
 						</div>
 						{#if source}
 							<div class="min-h-0 flex-1">
-								<DataPanel nodeId={source.id} label={`Entrée ${source.label}`}>
+								<DataPanel
+									nodeId={source.id}
+									label={sources.length > 1 ? `Entrée ${source.label}` : 'Entrée'}
+									fieldBase={inputTab === 0 ? '$json' : `$(${JSON.stringify(source.name)}).item.json`}
+								>
 									{#snippet emptyAction()}
 										<Button size="sm" variant="outline" disabled={wf.running} onclick={() => onrun(source.id)}>
 											<Play /> Exécuter les nœuds précédents
@@ -177,6 +181,7 @@
 								{param}
 								value={node.data.params[param.name]}
 								{columns}
+								nodeId={node.id}
 								nodeKind={node.data.kind}
 								onchange={(v) => wf.setParam(node.id, param.name, v)}
 							/>

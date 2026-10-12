@@ -51,7 +51,7 @@ pub async fn test_output(node: &Node, host: &dyn Host) -> Result<RecordBatch> {
             sample.insert("soumis_le".into(), json!(now));
             test_data(&p, Json::Object(sample))
         }
-        POLL => http::request(&p, host).await,
+        POLL => http::request(&p, host, &crate::expr::Scope::new(None)).await,
         ERROR => json_to_batch(&json!({
             "workflow": "Workflow en échec",
             "workflow_id": "00000000-0000-0000-0000-000000000000",
