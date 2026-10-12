@@ -3,7 +3,9 @@
 	import Building2 from '@lucide/svelte/icons/building-2';
 	import FilePlus from '@lucide/svelte/icons/file-plus';
 	import FileText from '@lucide/svelte/icons/file-text';
+	import FolderOpen from '@lucide/svelte/icons/folder-open';
 	import History from '@lucide/svelte/icons/history';
+	import KeyRound from '@lucide/svelte/icons/key-round';
 	import House from '@lucide/svelte/icons/house';
 	import Keyboard from '@lucide/svelte/icons/keyboard';
 	import ListTree from '@lucide/svelte/icons/list-tree';
@@ -38,6 +40,8 @@
 					{ id: 'nav-home', label: 'Accueil', icon: House, run: () => router.go({ name: 'home', ws }) },
 					{ id: 'nav-workflows', label: 'Tous les workflows', icon: ListTree, run: () => router.go({ name: 'workflows', ws }) },
 					{ id: 'nav-executions', label: 'Exécutions', icon: History, keywords: ['historique', 'logs', 'déclencheurs'], run: () => router.go({ name: 'executions', ws }) },
+					{ id: 'nav-credentials', label: 'Identifiants', icon: KeyRound, keywords: ['mot de passe', 'base de données', 'smtp', 'secret'], run: () => router.go({ name: 'credentials', ws }) },
+					{ id: 'nav-files', label: 'Fichiers', icon: FolderOpen, keywords: ['téléverser', 'csv', 'excel'], run: () => router.go({ name: 'files', ws }) },
 					{ id: 'nav-members', label: 'Membres', icon: Users, keywords: ['équipe', 'inviter'], run: () => router.go({ name: 'members', ws }) },
 					{ id: 'nav-settings', label: 'Paramètres du workspace', icon: Settings, run: () => router.go({ name: 'settings', ws }) },
 					{ id: 'nav-account', label: 'Mon compte', icon: UserRound, keywords: ['mot de passe', 'profil'], run: () => router.go({ name: 'account' }) },

@@ -36,6 +36,14 @@ pub struct Config {
     pub execution_timeout_secs: u64,
     /// Conservation de l'historique des exécutions (jours).
     pub executions_retention_days: i64,
+    /// Hôtes ou réseaux privés joignables malgré la protection SSRF
+    /// (ex. `db.interne, 10.0.0.0/24`) : bases de données de l'entreprise…
+    pub network_allowlist: Vec<String>,
+    /// Clé AES-256 de chiffrement des identifiants (32 octets).
+    pub credentials_key: [u8; 32],
+    /// Service « connectors » (Oracle) : URL interne et jeton partagé.
+    pub connectors_url: Option<String>,
+    pub connectors_token: Option<String>,
 }
 
 fn env(key: &str) -> Option<String> {
@@ -118,6 +126,18 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .filter(|n| *n > 0)
                 .unwrap_or(30),
+            network_allowlist: env("NETWORK_ALLOWLIST")
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            credentials_key: parse_key(
+                &secret("CREDENTIALS_KEY")?
+                    .ok_or("CREDENTIALS_KEY(_FILE) requis (voir scripts/init-secrets.sh)")?,
+            )?,
+            connectors_url: env("CONNECTORS_URL").map(|u| u.trim_end_matches('/').to_string()),
+            connectors_token: secret("CONNECTORS_TOKEN")?,
         })
     }
 }
@@ -131,4 +151,26 @@ fn percent_encode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+impl Config {
+    /// Politique réseau des workflows (anti-SSRF + liste blanche).
+    pub fn net_policy(&self) -> crate::net::NetPolicy {
+        crate::net::NetPolicy::new(self.http_allow_private, &self.network_allowlist)
+    }
+}
+
+/// Clé de 32 octets encodée en base64 (standard ou URL).
+pub fn parse_key(text: &str) -> Result<[u8; 32], String> {
+    use base64::Engine;
+    let t = text.trim();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(t)
+        .or_else(|_| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(t.trim_end_matches('='))
+        })
+        .map_err(|_| "CREDENTIALS_KEY : base64 invalide".to_string())?;
+    bytes
+        .try_into()
+        .map_err(|_| "CREDENTIALS_KEY : 32 octets attendus".to_string())
 }

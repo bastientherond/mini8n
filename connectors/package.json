@@ -1,0 +1,16 @@
+{
+  "name": "mini8n-connectors",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Connecteurs mini8n nécessitant un pilote hors Rust (Oracle, pilote node-oracledb en mode thin)",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "oracledb": "7.0.1"
+  }
+}

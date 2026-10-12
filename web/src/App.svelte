@@ -8,6 +8,7 @@
 	import Onboarding from '$lib/components/Onboarding.svelte';
 	import PublicFormPage from '$lib/components/pages/PublicFormPage.svelte';
 	import AppShell from '$lib/components/shell/AppShell.svelte';
+	import { resources } from '$lib/resources.svelte';
 	import { router } from '$lib/router.svelte';
 	import { session } from '$lib/session.svelte';
 	import { wf } from '$lib/workflow.svelte';
@@ -16,7 +17,10 @@
 
 	// Déconnexion ou expiration : on vide l'éditeur.
 	$effect(() => {
-		if (session.status !== 'ready') wf.reset();
+		if (session.status !== 'ready') {
+			wf.reset();
+			resources.reset();
+		}
 	});
 </script>
 

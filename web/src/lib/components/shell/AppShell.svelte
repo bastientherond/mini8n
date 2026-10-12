@@ -9,7 +9,10 @@
 	import { wf } from '$lib/workflow.svelte';
 	import Editor from '../Editor.svelte';
 	import AccountPage from '../pages/AccountPage.svelte';
+	import CredentialsPage from '../pages/CredentialsPage.svelte';
 	import ExecutionsPage from '../pages/ExecutionsPage.svelte';
+	import FilesPage from '../pages/FilesPage.svelte';
+	import { resources } from '$lib/resources.svelte';
 	import HomePage from '../pages/HomePage.svelte';
 	import MembersPage from '../pages/MembersPage.svelte';
 	import SettingsPage from '../pages/SettingsPage.svelte';
@@ -30,6 +33,7 @@
 			if (target && workspaces.some((w) => w.id === target)) {
 				session.select(target);
 				wf.loadWorkspace(target).catch((e) => toast.error(errorMessage(e)));
+				if (resources.workspaceId !== target) resources.load(target).catch((e) => toast.error(errorMessage(e)));
 				return;
 			}
 			if (route.name === 'account') return;
@@ -71,6 +75,10 @@
 					<SettingsPage />
 				{:else if route.name === 'executions'}
 					<ExecutionsPage />
+				{:else if route.name === 'credentials'}
+					<CredentialsPage />
+				{:else if route.name === 'files'}
+					<FilesPage />
 				{:else if route.name === 'editor'}
 					{#key route.ws}
 						<SvelteFlowProvider>

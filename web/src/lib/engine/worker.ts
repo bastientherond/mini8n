@@ -24,6 +24,27 @@ const MAX_DEPTH = 5;
  */
 function hostFor(workspaceId: string | undefined, depth: number) {
 	return {
+		/** Intégrations (bases de données, fichiers, e-mail…) : exécutées par l'API, jamais ici. */
+		runIntegration: async (nodeJson: string, inputs: Uint8Array[]): Promise<Uint8Array> => {
+			if (!workspaceId) throw new Error('Intégration indisponible hors workspace');
+			const toBase64 = (bytes: Uint8Array) => {
+				let binary = '';
+				for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+				return btoa(binary);
+			};
+			const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/integrations/run`, {
+				method: 'POST',
+				credentials: 'same-origin',
+				cache: 'no-store',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ node: JSON.parse(nodeJson), inputs: inputs.map(toBase64) }),
+			});
+			if (!res.ok) {
+				const data = await res.json().catch(() => null);
+				throw new Error((data as { error?: string } | null)?.error ?? `Erreur ${res.status}`);
+			}
+			return new Uint8Array(await res.arrayBuffer());
+		},
 		callWorkflow: async (workflowId: string, input: Uint8Array): Promise<Uint8Array> => {
 			if (!workspaceId) throw new Error("L'appel d'un autre workflow nécessite un workspace");
 			if (depth + 1 >= MAX_DEPTH) throw new Error(`Trop d'appels imbriqués (${MAX_DEPTH} niveaux max.)`);

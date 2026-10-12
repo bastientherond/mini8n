@@ -1,6 +1,8 @@
 <script lang="ts">
 	import type { Component } from 'svelte';
+	import FolderOpen from '@lucide/svelte/icons/folder-open';
 	import History from '@lucide/svelte/icons/history';
+	import KeyRound from '@lucide/svelte/icons/key-round';
 	import House from '@lucide/svelte/icons/house';
 	import ListTree from '@lucide/svelte/icons/list-tree';
 	import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
@@ -58,6 +60,10 @@
 				{ label: 'Éditeur', icon: SquarePen, route: editorTarget, active: name === 'editor' },
 				{ label: 'Workflows', icon: ListTree, route: { name: 'workflows', ws }, active: name === 'workflows' },
 				{ label: 'Exécutions', icon: History, route: { name: 'executions', ws }, active: name === 'executions' },
+			],
+			[
+				{ label: 'Identifiants', icon: KeyRound, route: { name: 'credentials', ws }, active: name === 'credentials' },
+				{ label: 'Fichiers', icon: FolderOpen, route: { name: 'files', ws }, active: name === 'files' },
 			],
 			[{ label: 'Membres', icon: Users, route: { name: 'members', ws }, active: name === 'members' }],
 			[

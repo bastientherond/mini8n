@@ -252,7 +252,7 @@ async fn poll(runner: &Runner, d: &Due) -> Result<(), String> {
 
     let fetched = async {
         let req = http::build_request(&Params(&d.config)).map_err(|e| e.to_string())?;
-        let res = net::fetch(req, runner.config().http_allow_private).await?;
+        let res = net::fetch(req, &runner.config().net_policy()).await?;
         let items_path = d
             .config
             .get("items_path")

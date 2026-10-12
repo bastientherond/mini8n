@@ -10,6 +10,7 @@ use std::pin::Pin;
 use arrow::array::RecordBatch;
 
 use crate::error::{Result, fail};
+use crate::workflow::Node;
 
 /// Future non `Send` (compatible WebAssembly).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -33,6 +34,17 @@ pub trait Host {
     fn http<'a>(&'a self, _req: HttpRequest) -> BoxFuture<'a, Result<HttpResponse>> {
         Box::pin(async {
             fail("Les requêtes HTTP ne sont pas disponibles dans cet environnement")
+        })
+    }
+
+    /// Exécute un nœud d'intégration (base de données, fichier, e-mail…) côté serveur.
+    fn integration<'a>(
+        &'a self,
+        _node: &'a Node,
+        _inputs: Vec<RecordBatch>,
+    ) -> BoxFuture<'a, Result<RecordBatch>> {
+        Box::pin(async {
+            fail("Ce nœud s'exécute sur le serveur (intégration indisponible ici)")
         })
     }
 

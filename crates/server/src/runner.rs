@@ -117,6 +117,7 @@ struct Job {
 struct Inner {
     db: PgPool,
     config: Arc<Config>,
+    vault: Arc<crate::crypto::Vault>,
     handle: Handle,
     tx: mpsc::Sender<Job>,
 }
@@ -130,12 +131,13 @@ type SendFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 impl Runner {
     /// Démarre le pool de threads d'exécution (à appeler depuis le runtime principal).
-    pub fn start_pool(db: PgPool, config: Arc<Config>) -> Runner {
+    pub fn start_pool(db: PgPool, config: Arc<Config>, vault: Arc<crate::crypto::Vault>) -> Runner {
         let (tx, rx) = mpsc::channel::<Job>(QUEUE_CAPACITY);
         let rx = Arc::new(Mutex::new(rx));
         let inner = Arc::new(Inner {
             db,
             config: config.clone(),
+            vault,
             handle: Handle::current(),
             tx,
         });
@@ -373,12 +375,39 @@ fn engine_err(msg: impl Into<String>) -> EngineError {
 }
 
 impl Host for ServerHost {
-    fn http<'a>(&'a self, req: HttpRequest) -> BoxFuture<'a, mini8n_engine::Result<HttpResponse>> {
-        // Le client HTTP tourne sur le runtime principal (résolution DNS, TLS, pool de connexions).
+    fn integration<'a>(
+        &'a self,
+        node: &'a mini8n_engine::Node,
+        inputs: Vec<RecordBatch>,
+    ) -> BoxFuture<'a, mini8n_engine::Result<RecordBatch>> {
+        let ctx = crate::integrations::Ctx {
+            db: self.inner.db.clone(),
+            vault: self.inner.vault.clone(),
+            config: self.inner.config.clone(),
+            workspace_id: self.ctx.workspace_id,
+            execution_id: Some(self.ctx.execution_id),
+            user_id: None,
+        };
+        let node = node.clone();
+        // Pilotes SQL, SMTP et client HTTP tournent sur le runtime principal.
         let task = self
             .inner
             .handle
-            .spawn(net::fetch(req, self.inner.config.http_allow_private));
+            .spawn(async move { crate::integrations::run(&ctx, &node, inputs).await });
+        Box::pin(async move {
+            match task.await {
+                Ok(res) => res.map_err(engine_err),
+                Err(e) => Err(engine_err(format!("Intégration interrompue : {e}"))),
+            }
+        })
+    }
+
+    fn http<'a>(&'a self, req: HttpRequest) -> BoxFuture<'a, mini8n_engine::Result<HttpResponse>> {
+        // Le client HTTP tourne sur le runtime principal (résolution DNS, TLS, pool de connexions).
+        let task = self.inner.handle.spawn({
+            let policy = self.inner.config.net_policy();
+            async move { net::fetch(req, &policy).await }
+        });
         Box::pin(async move {
             match task.await {
                 Ok(Ok(res)) => Ok(res),

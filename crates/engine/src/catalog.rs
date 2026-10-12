@@ -12,6 +12,7 @@ pub enum Category {
     Transform,
     Combine,
     Flow,
+    Integration,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -32,6 +33,10 @@ pub enum ParamType {
     Token,
     /// Identifiant d'un workflow du workspace.
     Workflow,
+    /// Identifiant chiffré du workspace (type donné par `credential`).
+    Credential,
+    /// Fichier du workspace.
+    File,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +52,9 @@ pub struct ParamSpec {
     pub placeholder: &'static str,
     #[serde(skip_serializing_if = "str::is_empty")]
     pub help: &'static str,
+    /// Type d'identifiant attendu (paramètres `credential`).
+    #[serde(skip_serializing_if = "str::is_empty")]
+    pub credential: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,7 +79,19 @@ fn param(name: &'static str, label: &'static str, ty: ParamType, default: Json) 
         options: vec![],
         placeholder: "",
         help: "",
+        credential: "",
     }
+}
+
+fn credential(kind: &'static str) -> ParamSpec {
+    let mut p = param(
+        "credential",
+        "Identifiant",
+        ParamType::Credential,
+        json!(""),
+    );
+    p.credential = kind;
+    p
 }
 
 impl ParamSpec {
@@ -379,6 +399,142 @@ pub fn all() -> Vec<NodeSpec> {
                     .placeholder("identique à A si vide"),
             ],
         },
+        // ------------------------------------------------------------------ intégrations
+        NodeSpec {
+            kind: "postgres_query",
+            label: "PostgreSQL · lire",
+            category: Integration,
+            description: "Exécute une requête SQL sur PostgreSQL et renvoie les lignes.",
+            icon: "database",
+            inputs: vec![],
+            params: vec![
+                credential("postgres"),
+                param("query", "Requête SQL", P::Expression, json!("SELECT * FROM commandes ORDER BY id DESC LIMIT 100")),
+                param("max_rows", "Lignes maximum", P::Number, json!(10000)),
+            ],
+        },
+        NodeSpec {
+            kind: "postgres_write",
+            label: "PostgreSQL · écrire",
+            category: Integration,
+            description: "Insère (ou met à jour) les lignes de la table d'entrée dans une table PostgreSQL.",
+            icon: "database",
+            inputs: vec!["Entrée"],
+            params: vec![
+                credential("postgres"),
+                param("table", "Table", P::String, json!("")).placeholder("schema.table"),
+                param("mode", "Mode", P::Select, json!("insertion")).options(&["insertion", "insertion ou mise à jour"]),
+                param("key", "Clé (mise à jour)", P::String, json!("id"))
+                    .help("Colonnes de la contrainte unique utilisée pour la mise à jour."),
+            ],
+        },
+        NodeSpec {
+            kind: "mysql_query",
+            label: "MySQL · lire",
+            category: Integration,
+            description: "Exécute une requête SQL sur MySQL / MariaDB et renvoie les lignes.",
+            icon: "database",
+            inputs: vec![],
+            params: vec![
+                credential("mysql"),
+                param("query", "Requête SQL", P::Expression, json!("SELECT * FROM commandes LIMIT 100")),
+                param("max_rows", "Lignes maximum", P::Number, json!(10000)),
+            ],
+        },
+        NodeSpec {
+            kind: "mysql_write",
+            label: "MySQL · écrire",
+            category: Integration,
+            description: "Insère (ou met à jour) les lignes de la table d'entrée dans une table MySQL / MariaDB.",
+            icon: "database",
+            inputs: vec!["Entrée"],
+            params: vec![
+                credential("mysql"),
+                param("table", "Table", P::String, json!("")),
+                param("mode", "Mode", P::Select, json!("insertion")).options(&["insertion", "insertion ou mise à jour"])
+                    .help("La mise à jour s'appuie sur la clé primaire ou un index unique de la table."),
+            ],
+        },
+        NodeSpec {
+            kind: "oracle_query",
+            label: "Oracle · lire",
+            category: Integration,
+            description: "Exécute une requête SQL sur Oracle Database et renvoie les lignes.",
+            icon: "database",
+            inputs: vec![],
+            params: vec![
+                credential("oracle"),
+                param("query", "Requête SQL", P::Expression, json!("SELECT * FROM commandes FETCH FIRST 100 ROWS ONLY")),
+                param("max_rows", "Lignes maximum", P::Number, json!(10000)),
+            ],
+        },
+        NodeSpec {
+            kind: "oracle_write",
+            label: "Oracle · écrire",
+            category: Integration,
+            description: "Insère les lignes de la table d'entrée dans une table Oracle.",
+            icon: "database",
+            inputs: vec!["Entrée"],
+            params: vec![credential("oracle"), param("table", "Table", P::String, json!("")).placeholder("SCHEMA.TABLE")],
+        },
+        NodeSpec {
+            kind: "file_write",
+            label: "Créer un fichier",
+            category: Integration,
+            description: "Enregistre la table d'entrée dans un fichier du workspace (CSV, JSON, Parquet, Excel).",
+            icon: "file-plus",
+            inputs: vec!["Entrée"],
+            params: vec![
+                param("name", "Nom du fichier", P::String, json!("export-{date}"))
+                    .help("Variables : {date}, {heure}, {lignes}. L'extension est ajoutée selon le format."),
+                param("format", "Format", P::Select, json!("csv")).options(&["csv", "json", "parquet", "excel"]),
+            ],
+        },
+        NodeSpec {
+            kind: "file_read",
+            label: "Lire un fichier",
+            category: Integration,
+            description: "Lit un fichier du workspace (CSV, JSON, Parquet, Excel, OpenDocument).",
+            icon: "file-input",
+            inputs: vec![],
+            params: vec![
+                param("file", "Fichier", P::File, json!("")),
+                param("sheet", "Feuille (Excel)", P::String, json!("")).placeholder("première feuille"),
+            ],
+        },
+        NodeSpec {
+            kind: "email_send",
+            label: "Envoyer un e-mail",
+            category: Integration,
+            description: "Envoie un e-mail par ligne, ou un récapitulatif avec la table en pièce jointe.",
+            icon: "mail",
+            inputs: vec!["Entrée"],
+            params: vec![
+                credential("smtp"),
+                param("mode", "Mode", P::Select, json!("un par ligne")).options(&["un par ligne", "récapitulatif"]),
+                param("to", "Destinataire(s)", P::String, json!("")).placeholder("{{email}} ou equipe@exemple.com")
+                    .help("Plusieurs adresses séparées par des virgules. {{colonne}} insère une valeur de la ligne."),
+                param("subject", "Objet", P::String, json!("Nouvelle commande {{id}}")),
+                param("body", "Message", P::Text, json!("Bonjour,\n\nVoici les informations : {{produit}} × {{quantite}}.\n"))
+                    .help("Variables : {{colonne}} (mode par ligne), {{nb_lignes}} et {{tableau}} (récapitulatif)."),
+                param("attachment", "Pièce jointe (récapitulatif)", P::Select, json!("aucune")).options(&["aucune", "csv", "excel"]),
+            ],
+        },
+        NodeSpec {
+            kind: "chat_message",
+            label: "Message (Slack, Teams…)",
+            category: Integration,
+            description: "Publie un message via un webhook Slack, Discord, Microsoft Teams, Mattermost ou Google Chat.",
+            icon: "message-square",
+            inputs: vec!["Entrée"],
+            params: vec![
+                credential("chat_webhook"),
+                param("service", "Service", P::Select, json!("Slack")).options(&["Slack", "Discord", "Microsoft Teams", "Mattermost", "Google Chat"]),
+                param("mode", "Mode", P::Select, json!("récapitulatif")).options(&["récapitulatif", "un par ligne"]),
+                param("message", "Message", P::Text, json!("{{nb_lignes}} nouvelle(s) ligne(s) :\n{{tableau}}"))
+                    .help("Variables : {{colonne}} (un par ligne), {{nb_lignes}} et {{tableau}} (récapitulatif)."),
+            ],
+        },
         // ------------------------------------------------------------------ flux
         NodeSpec {
             kind: "subworkflow",
@@ -395,4 +551,21 @@ pub fn all() -> Vec<NodeSpec> {
 
 pub fn spec(kind: &str) -> Option<NodeSpec> {
     all().into_iter().find(|s| s.kind == kind)
+}
+
+/// Nœuds exécutés par l'hôte serveur (bases de données, fichiers, e-mail, messagerie).
+pub fn is_integration(kind: &str) -> bool {
+    matches!(
+        kind,
+        "postgres_query"
+            | "postgres_write"
+            | "mysql_query"
+            | "mysql_write"
+            | "oracle_query"
+            | "oracle_write"
+            | "file_write"
+            | "file_read"
+            | "email_send"
+            | "chat_message"
+    )
 }

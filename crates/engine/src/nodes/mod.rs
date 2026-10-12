@@ -104,6 +104,10 @@ pub async fn execute(
             host.call_workflow(id.trim(), input()?).await
         }
         kind if triggers::is_trigger(kind) => triggers::test_output(node, host).await,
+        kind if crate::catalog::is_integration(kind) => {
+            let inputs: Vec<RecordBatch> = inputs.collect();
+            host.integration(node, inputs).await
+        }
         other => fail(format!("Type de nœud inconnu : {other}")),
     }
 }

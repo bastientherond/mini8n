@@ -2,6 +2,11 @@ import type { Component } from 'svelte';
 import ArrowDownWideNarrow from '@lucide/svelte/icons/arrow-down-wide-narrow';
 import ClipboardList from '@lucide/svelte/icons/clipboard-list';
 import Clock from '@lucide/svelte/icons/clock';
+import Database from '@lucide/svelte/icons/database';
+import FileInput from '@lucide/svelte/icons/file-input';
+import FilePlus from '@lucide/svelte/icons/file-plus';
+import Mail from '@lucide/svelte/icons/mail';
+import MessageSquare from '@lucide/svelte/icons/message-square';
 import CornerDownRight from '@lucide/svelte/icons/corner-down-right';
 import MousePointerClick from '@lucide/svelte/icons/mouse-pointer-click';
 import Radar from '@lucide/svelte/icons/radar';
@@ -26,6 +31,11 @@ const ICONS: Record<string, Component> = {
 	'arrow-down-wide-narrow': ArrowDownWideNarrow,
 	'clipboard-list': ClipboardList,
 	clock: Clock,
+	database: Database,
+	'file-input': FileInput,
+	'file-plus': FilePlus,
+	mail: Mail,
+	'message-square': MessageSquare,
 	'corner-down-right': CornerDownRight,
 	'mouse-pointer-click': MousePointerClick,
 	radar: Radar,
@@ -54,6 +64,7 @@ export const categoryLabels: Record<string, string> = {
 	transform: 'Transformations',
 	combine: 'Combinaisons',
 	flow: 'Flux',
+	integration: 'Intégrations',
 };
 
 /** Couleur d'accent par catégorie (classes Tailwind). */
@@ -63,6 +74,7 @@ export const categoryAccent: Record<string, string> = {
 	combine: 'bg-violet-500/15 text-violet-600 dark:text-violet-400',
 	trigger: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
 	flow: 'bg-rose-500/15 text-rose-600 dark:text-rose-400',
+	integration: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-400',
 };
 
 export const triggerKindLabels: Record<string, string> = {

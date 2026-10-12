@@ -91,6 +91,42 @@ export interface ExecutionDetail extends ExecutionSummary {
 	output: { columns: { name: string; type: string }[]; rows: Record<string, unknown>[]; total: number } | null;
 }
 
+export interface CredentialField {
+	name: string;
+	label: string;
+	type: 'text' | 'number' | 'password' | 'select';
+	secret: boolean;
+	required: boolean;
+	default: unknown;
+	options?: string[];
+	placeholder?: string;
+}
+
+export interface CredentialKind {
+	kind: string;
+	label: string;
+	description: string;
+	fields: CredentialField[];
+}
+
+export interface CredentialInfo {
+	id: string;
+	name: string;
+	kind: string;
+	/** Champs non secrets ; `<champ>_defini` indique si un secret est enregistré. */
+	summary: Record<string, unknown>;
+	updatedAt: string;
+}
+
+export interface FileInfo {
+	id: string;
+	name: string;
+	contentType: string;
+	size: number;
+	executionId: string | null;
+	createdAt: string;
+}
+
 export interface PublicForm {
 	title: string;
 	description: string;
@@ -201,6 +237,30 @@ export const api = {
 		return request<ExecutionSummary[]>('GET', `${ws(id)}/executions${qs ? `?${qs}` : ''}`);
 	},
 	execution: (id: string, eid: string) => request<ExecutionDetail>('GET', `${ws(id)}/executions/${encodeURIComponent(eid)}`),
+
+	credentialTypes: () => request<CredentialKind[]>('GET', '/credential-types'),
+	credentials: (id: string) => request<CredentialInfo[]>('GET', `${ws(id)}/credentials`),
+	createCredential: (id: string, name: string, kind: string, data: Record<string, unknown>) =>
+		request<CredentialInfo>('POST', `${ws(id)}/credentials`, { name, kind, data }),
+	updateCredential: (id: string, cid: string, name: string, data: Record<string, unknown>) =>
+		request<CredentialInfo>('PUT', `${ws(id)}/credentials/${encodeURIComponent(cid)}`, { name, data }),
+	deleteCredential: (id: string, cid: string) => request<void>('DELETE', `${ws(id)}/credentials/${encodeURIComponent(cid)}`),
+	testCredential: (id: string, cid: string) =>
+		request<{ ok: boolean; message: string }>('POST', `${ws(id)}/credentials/${encodeURIComponent(cid)}/test`),
+
+	files: (id: string) => request<FileInfo[]>('GET', `${ws(id)}/files`),
+	deleteFile: (id: string, fid: string) => request<void>('DELETE', `${ws(id)}/files/${encodeURIComponent(fid)}`),
+	fileUrl: (id: string, fid: string) => `/api${ws(id)}/files/${encodeURIComponent(fid)}/content`,
+	uploadFile: async (id: string, file: File): Promise<FileInfo> => {
+		const res = await fetch(`/api${ws(id)}/files?name=${encodeURIComponent(file.name)}`, {
+			method: 'POST',
+			credentials: 'same-origin',
+			body: file,
+		});
+		const data = await res.json().catch(() => null);
+		if (!res.ok) throw new ApiError(res.status, (data as { error?: string } | null)?.error ?? `Erreur ${res.status}`);
+		return data as FileInfo;
+	},
 
 	publicForm: (token: string) => request<PublicForm>('GET', `/forms/${encodeURIComponent(token)}`),
 	submitForm: (token: string, values: Record<string, unknown>) =>

@@ -2,8 +2,12 @@
 
 pub mod auth;
 pub mod config;
+pub mod credentials;
+pub mod crypto;
 pub mod error;
 pub mod executions;
+pub mod files;
+pub mod integrations;
 pub mod net;
 pub mod runner;
 pub mod schedule;
@@ -19,7 +23,7 @@ use std::time::Duration;
 
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderValue, StatusCode, header};
-use axum::routing::{any, get, patch, post, put};
+use axum::routing::{any, delete, get, patch, post, put};
 use axum::{Json, Router, middleware};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -69,14 +73,18 @@ pub struct AppState {
     pub hash_permits: Arc<Semaphore>,
     /// Exécution des workflows côté serveur.
     pub runner: runner::Runner,
+    /// Chiffrement des identifiants.
+    pub vault: Arc<crypto::Vault>,
 }
 
 impl AppState {
     /// À appeler depuis le runtime Tokio (démarre le pool d'exécution).
     pub fn new(db: PgPool, config: Config) -> Self {
         let config = Arc::new(config);
+        let vault = Arc::new(crypto::Vault::new(&config.credentials_key));
         Self {
-            runner: runner::Runner::start_pool(db.clone(), config.clone()),
+            runner: runner::Runner::start_pool(db.clone(), config.clone(), vault.clone()),
+            vault,
             db,
             config,
             limits: Arc::new(Limits::default()),
@@ -145,6 +153,31 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/workspaces/{ws}/workflows/{id}/run",
             post(triggers::run_now),
+        )
+        .route("/credential-types", get(credentials::types))
+        .route(
+            "/workspaces/{ws}/credentials",
+            get(credentials::list).post(credentials::create),
+        )
+        .route(
+            "/workspaces/{ws}/credentials/{id}",
+            put(credentials::update).delete(credentials::delete),
+        )
+        .route(
+            "/workspaces/{ws}/credentials/{id}/test",
+            post(credentials::test),
+        )
+        .route(
+            "/workspaces/{ws}/files",
+            get(files::list)
+                .post(files::upload)
+                .layer(DefaultBodyLimit::max(files::MAX_FILE_BYTES + 1024)),
+        )
+        .route("/workspaces/{ws}/files/{id}", delete(files::delete))
+        .route("/workspaces/{ws}/files/{id}/content", get(files::download))
+        .route(
+            "/workspaces/{ws}/integrations/run",
+            post(integrations::run_endpoint).layer(DefaultBodyLimit::max(40 * 1024 * 1024)),
         )
         .route("/workspaces/{ws}/executions", get(executions::list))
         .route("/workspaces/{ws}/executions/{id}", get(executions::get))

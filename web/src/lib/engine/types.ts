@@ -9,7 +9,9 @@ export type ParamType =
 	| 'boolean'
 	| 'select'
 	| 'token'
-	| 'workflow';
+	| 'workflow'
+	| 'credential'
+	| 'file';
 
 export interface ParamSpec {
 	name: string;
@@ -19,9 +21,11 @@ export interface ParamSpec {
 	options?: string[];
 	placeholder?: string;
 	help?: string;
+	/** Type d'identifiant attendu (paramètres `credential`). */
+	credential?: string;
 }
 
-export type Category = 'trigger' | 'source' | 'transform' | 'combine' | 'flow';
+export type Category = 'trigger' | 'source' | 'transform' | 'combine' | 'flow' | 'integration';
 
 export interface NodeSpec {
 	kind: string;

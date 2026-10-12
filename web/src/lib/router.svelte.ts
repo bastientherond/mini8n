@@ -10,6 +10,8 @@ export type Route =
 	| { name: 'members'; ws: string }
 	| { name: 'settings'; ws: string }
 	| { name: 'executions'; ws: string }
+	| { name: 'credentials'; ws: string }
+	| { name: 'files'; ws: string }
 	| { name: 'form'; token: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -33,6 +35,10 @@ export function parse(hash: string): Route {
 			return { name: 'settings', ws };
 		case 'executions':
 			return { name: 'executions', ws };
+		case 'credentials':
+			return { name: 'credentials', ws };
+		case 'files':
+			return { name: 'files', ws };
 		default:
 			return { name: 'home', ws };
 	}
@@ -56,6 +62,10 @@ export function format(route: Route): string {
 			return `/w/${route.ws}/settings`;
 		case 'executions':
 			return `/w/${route.ws}/executions`;
+		case 'credentials':
+			return `/w/${route.ws}/credentials`;
+		case 'files':
+			return `/w/${route.ws}/files`;
 		case 'form':
 			return `/f/${route.token}`;
 	}

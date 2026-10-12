@@ -1,7 +1,9 @@
 <script lang="ts">
 	import Copy from '@lucide/svelte/icons/copy';
 	import ExternalLink from '@lucide/svelte/icons/external-link';
+	import Plus from '@lucide/svelte/icons/plus';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+	import Upload from '@lucide/svelte/icons/upload';
 	import { toast } from 'svelte-sonner';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -9,7 +11,11 @@
 	import * as Select from '$lib/components/ui/select';
 	import { Switch } from '$lib/components/ui/switch';
 	import { Textarea } from '$lib/components/ui/textarea';
+	import { api, errorMessage } from '$lib/api';
 	import { newToken } from '$lib/engine/convert';
+	import { formatBytes } from '$lib/icons';
+	import { resources } from '$lib/resources.svelte';
+	import CredentialDialog from './CredentialDialog.svelte';
 	import type { ParamSpec } from '$lib/engine/types';
 	import { wf } from '$lib/workflow.svelte';
 
@@ -35,6 +41,27 @@
 	});
 
 	const otherWorkflows = $derived(wf.workflows.filter((w) => w.id !== wf.workflowId));
+	const credentials = $derived(resources.credentials.filter((c) => c.kind === param.credential));
+	let credentialDialog = $state(false);
+	let uploading = $state(false);
+
+	async function upload(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		input.value = '';
+		if (!file || !resources.workspaceId) return;
+		uploading = true;
+		try {
+			const saved = await api.uploadFile(resources.workspaceId, file);
+			await resources.refreshFiles();
+			onchange(saved.id);
+			toast.success(`« ${saved.name} » téléversé`);
+		} catch (e) {
+			toast.error(errorMessage(e));
+		} finally {
+			uploading = false;
+		}
+	}
 
 	async function copy(text: string) {
 		try {
@@ -112,6 +139,53 @@
 			>
 				<RefreshCw />
 			</Button>
+		</div>
+	{:else if param.type === 'credential'}
+		<div class="flex gap-1">
+			<Select.Root type="single" value={text} onValueChange={(v) => onchange(v)}>
+				<Select.Trigger id={fieldId} class="min-w-0 flex-1">
+					{credentials.find((c) => c.id === text)?.name ?? (text ? 'Identifiant introuvable' : 'Choisir un identifiant…')}
+				</Select.Trigger>
+				<Select.Content>
+					{#each credentials as c (c.id)}
+						<Select.Item value={c.id} label={c.name}>
+							<span class="truncate">{c.name}</span>
+							{#if c.summary.host}<span class="text-muted-foreground ml-auto text-xs">{c.summary.host}</span>{/if}
+						</Select.Item>
+					{:else}
+						<p class="text-muted-foreground px-2 py-1.5 text-sm">Aucun identifiant de ce type.</p>
+					{/each}
+				</Select.Content>
+			</Select.Root>
+			<Button variant="outline" size="icon" onclick={() => (credentialDialog = true)} aria-label="Nouvel identifiant" title="Nouvel identifiant">
+				<Plus />
+			</Button>
+		</div>
+		<CredentialDialog bind:open={credentialDialog} kind={param.credential} onsaved={(c) => onchange(c.id)} />
+	{:else if param.type === 'file'}
+		<div class="flex gap-1">
+			<Select.Root type="single" value={text} onValueChange={(v) => onchange(v)}>
+				<Select.Trigger id={fieldId} class="min-w-0 flex-1">
+					{resources.files.find((f) => f.id === text)?.name ?? (text ? 'Fichier introuvable' : 'Choisir un fichier…')}
+				</Select.Trigger>
+				<Select.Content>
+					{#each resources.files as f (f.id)}
+						<Select.Item value={f.id} label={f.name}>
+							<span class="truncate">{f.name}</span>
+							<span class="text-muted-foreground ml-auto text-xs">{formatBytes(f.size)}</span>
+						</Select.Item>
+					{:else}
+						<p class="text-muted-foreground px-2 py-1.5 text-sm">Aucun fichier : téléversez-en un.</p>
+					{/each}
+				</Select.Content>
+			</Select.Root>
+			<label
+				class="border-input hover:bg-accent flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg border"
+				title="Téléverser un fichier"
+			>
+				<Upload class="size-4" />
+				<input type="file" class="sr-only" accept=".csv,.json,.parquet,.xlsx,.xlsm,.xls,.ods,.txt" disabled={uploading} onchange={upload} />
+			</label>
 		</div>
 	{:else if param.type === 'workflow'}
 		<Select.Root type="single" value={text} onValueChange={(v) => onchange(v)}>

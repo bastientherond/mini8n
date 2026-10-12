@@ -38,13 +38,44 @@ pub fn catalog() -> String {
     serde_json::to_string(&crate::catalog::all()).unwrap_or_else(|_| "[]".into())
 }
 
-/// Hôte fourni par JavaScript : `{ callWorkflow(id: string, input: Uint8Array): Promise<Uint8Array> }`
-/// (tables au format Parquet).
+/// Hôte fourni par JavaScript (tables au format Parquet) :
+/// `{ callWorkflow(id, input): Promise<Uint8Array>, runIntegration(nodeJson, inputs: Uint8Array[]): Promise<Uint8Array> }`.
 struct JsHost {
     call_workflow: Option<Function>,
+    run_integration: Option<Function>,
 }
 
 impl Host for JsHost {
+    fn integration<'a>(
+        &'a self,
+        node: &'a crate::workflow::Node,
+        inputs: Vec<arrow::array::RecordBatch>,
+    ) -> BoxFuture<'a, Result<arrow::array::RecordBatch>> {
+        Box::pin(async move {
+            let Some(f) = &self.run_integration else {
+                return crate::error::fail(
+                    "Ce nœud s'exécute sur le serveur (intégration indisponible ici)",
+                );
+            };
+            let array = js_sys::Array::new();
+            for batch in &inputs {
+                array.push(&Uint8Array::from(data::to_parquet(batch)?.as_slice()));
+            }
+            let node_json = serde_json::to_string(node)?;
+            let promise: Promise = f
+                .call2(&JsValue::NULL, &JsValue::from_str(&node_json), &array)
+                .map_err(engine_err)?
+                .dyn_into()
+                .map_err(engine_err)?;
+            let out: Uint8Array = JsFuture::from(promise)
+                .await
+                .map_err(engine_err)?
+                .dyn_into()
+                .map_err(engine_err)?;
+            data::from_parquet(out.to_vec())
+        })
+    }
+
     fn call_workflow<'a>(
         &'a self,
         workflow_id: &'a str,
@@ -97,19 +128,30 @@ pub async fn run_workflow(
     } else {
         None
     };
-    let call_workflow = if host.is_object() {
-        Reflect::get(&host, &"callWorkflow".into())?
+    let host_fn = |name: &str| -> Option<Function> {
+        if !host.is_object() {
+            return None;
+        }
+        Reflect::get(&host, &name.into())
+            .ok()?
             .dyn_into::<Function>()
             .ok()
-    } else {
-        None
     };
+    let (call_workflow, run_integration) = (host_fn("callWorkflow"), host_fn("runIntegration"));
 
     let opts = workflow::RunOptions {
         target: target.as_deref(),
         trigger,
     };
-    let report = workflow::run_with(&wf, opts, &JsHost { call_workflow }).await;
+    let report = workflow::run_with(
+        &wf,
+        opts,
+        &JsHost {
+            call_workflow,
+            run_integration,
+        },
+    )
+    .await;
 
     let data_obj = Object::new();
     for (id, result) in &report.results {
