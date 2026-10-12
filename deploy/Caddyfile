@@ -1,0 +1,21 @@
+# Reverse proxy TLS optionnel (profil « tls ») : certificats automatiques (Let's Encrypt / ZeroSSL),
+# HTTP → HTTPS, HSTS. SITE_ADDRESS = nom de domaine public pointant vers ce serveur.
+{
+	admin off
+}
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		-Server
+		-Via
+	}
+
+	request_body {
+		max_size 2MB
+	}
+
+	reverse_proxy web:8080
+}

@@ -1,0 +1,146 @@
+# mini8n — une image par partie :
+#   engine  (build Rust → wasm, artefact consommé par web)
+#   db      (PostgreSQL, réseau interne sans accès extérieur)
+#   server  (API Rust, réseau interne)
+#   web     (nginx non-root : interface + reverse proxy /api)
+#   proxy   (Caddy, TLS automatique — profil optionnel « tls »)
+#
+# Démarrage : ./scripts/init-secrets.sh && docker compose up -d --build
+name: mini8n
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  engine:
+    build:
+      context: .
+      dockerfile: crates/engine/Dockerfile
+    image: mini8n/engine:local
+    # Image d'artefact (wasm) : construite mais jamais exécutée.
+    scale: 0
+
+  db:
+    <<: *hardening
+    image: postgres:18-alpine
+    user: "70:70"
+    environment:
+      POSTGRES_USER: mini8n
+      POSTGRES_DB: mini8n
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"
+    secrets: [db_password]
+    volumes:
+      - db-data:/var/lib/postgresql
+    tmpfs:
+      - /var/run/postgresql:mode=0770,uid=70,gid=70
+      - /tmp:mode=1777
+    shm_size: 128m
+    networks: [data]
+    pids_limit: 200
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mini8n -d mini8n"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  server:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: crates/server/Dockerfile
+    image: mini8n/server:local
+    environment:
+      DATABASE_HOST: db
+      DATABASE_USER: mini8n
+      DATABASE_NAME: mini8n
+      DATABASE_PASSWORD_FILE: /run/secrets/db_password
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+      COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
+      TRUST_PROXY: "true"
+      RUST_LOG: ${RUST_LOG:-info,tower_http=info,sqlx=warn}
+    secrets: [db_password]
+    depends_on:
+      db: { condition: service_healthy }
+    networks: [data, backend]
+    pids_limit: 100
+    mem_limit: 512m
+    cpus: 2
+
+  web:
+    <<: *hardening
+    build:
+      context: ./web
+      additional_contexts:
+        engine: service:engine
+    image: mini8n/web:local
+    environment:
+      CSP_CONNECT_SRC: ${CSP_CONNECT_SRC:-https:}
+    ports:
+      # Par défaut, uniquement sur la machine locale. Mettre WEB_BIND=0.0.0.0 pour exposer.
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:8080"
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    depends_on:
+      server: { condition: service_healthy }
+    networks: [backend, edge, tls]
+    pids_limit: 100
+    mem_limit: 256m
+
+  proxy:
+    <<: *hardening
+    profiles: [tls]
+    image: caddy:2.11-alpine
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    cap_add: [NET_BIND_SERVICE]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    tmpfs:
+      - /tmp
+    depends_on:
+      web: { condition: service_healthy }
+    networks:
+      tls:
+        ipv4_address: 172.30.250.10
+    pids_limit: 100
+    mem_limit: 256m
+
+networks:
+  # Base de données : joignable uniquement par l'API, sans accès Internet.
+  data:
+    internal: true
+  # API : joignable uniquement par nginx, sans accès Internet.
+  backend:
+    internal: true
+  # Exposition HTTP directe (port publié).
+  edge: {}
+  # Reverse proxy TLS → nginx (adresse fixe de confiance pour l'IP cliente).
+  tls:
+    ipam:
+      config:
+        - subnet: 172.30.250.0/24
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:

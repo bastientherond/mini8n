@@ -1,0 +1,10 @@
+# Contexte des images engine et server (racine du dépôt)
+target/
+web/
+**/node_modules/
+.git/
+.idea/
+.claude/
+secrets/
+deploy/
+*.md
