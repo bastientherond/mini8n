@@ -8,13 +8,17 @@ export type Route =
 	| { name: 'workflows'; ws: string }
 	| { name: 'editor'; ws: string; workflow: string }
 	| { name: 'members'; ws: string }
-	| { name: 'settings'; ws: string };
+	| { name: 'settings'; ws: string }
+	| { name: 'executions'; ws: string }
+	| { name: 'form'; token: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TOKEN = /^[A-Za-z0-9_-]{32,128}$/;
 
 export function parse(hash: string): Route {
 	const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
 	if (parts[0] === 'account' && parts.length === 1) return { name: 'account' };
+	if (parts[0] === 'f' && TOKEN.test(parts[1] ?? '')) return { name: 'form', token: parts[1] };
 	if (parts[0] !== 'w' || !UUID.test(parts[1] ?? '')) return { name: 'root' };
 	const ws = parts[1].toLowerCase();
 	switch (parts[2]) {
@@ -27,6 +31,8 @@ export function parse(hash: string): Route {
 			return { name: 'members', ws };
 		case 'settings':
 			return { name: 'settings', ws };
+		case 'executions':
+			return { name: 'executions', ws };
 		default:
 			return { name: 'home', ws };
 	}
@@ -48,6 +54,10 @@ export function format(route: Route): string {
 			return `/w/${route.ws}/members`;
 		case 'settings':
 			return `/w/${route.ws}/settings`;
+		case 'executions':
+			return `/w/${route.ws}/executions`;
+		case 'form':
+			return `/f/${route.token}`;
 	}
 }
 

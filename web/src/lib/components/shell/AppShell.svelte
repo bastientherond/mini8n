@@ -9,6 +9,7 @@
 	import { wf } from '$lib/workflow.svelte';
 	import Editor from '../Editor.svelte';
 	import AccountPage from '../pages/AccountPage.svelte';
+	import ExecutionsPage from '../pages/ExecutionsPage.svelte';
 	import HomePage from '../pages/HomePage.svelte';
 	import MembersPage from '../pages/MembersPage.svelte';
 	import SettingsPage from '../pages/SettingsPage.svelte';
@@ -68,6 +69,8 @@
 					<MembersPage />
 				{:else if route.name === 'settings'}
 					<SettingsPage />
+				{:else if route.name === 'executions'}
+					<ExecutionsPage />
 				{:else if route.name === 'editor'}
 					{#key route.ws}
 						<SvelteFlowProvider>

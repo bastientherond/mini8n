@@ -59,8 +59,8 @@ function call<T>(req: DistributiveOmit<Request, 'id'>, timeoutMs = CALL_TIMEOUT_
 export const engine = {
 	catalog: () => call<NodeSpec[]>({ method: 'catalog' }),
 	version: () => call<string>({ method: 'version' }),
-	run: (workflow: EngineWorkflow, target?: string) =>
-		call<RunOutput>({ method: 'run', workflow: JSON.stringify(workflow), target }, RUN_TIMEOUT_MS),
+	run: (workflow: EngineWorkflow, target?: string, workspaceId?: string) =>
+		call<RunOutput>({ method: 'run', workflow: JSON.stringify(workflow), target, workspaceId }, RUN_TIMEOUT_MS),
 	preview: (bytes: Uint8Array, offset: number, limit: number) =>
 		call<Preview>({ method: 'preview', bytes, offset, limit }),
 	toCsv: (bytes: Uint8Array) => call<string>({ method: 'csv', bytes }),

@@ -55,6 +55,11 @@
 								<FileText class="text-muted-foreground size-4" />
 								{item.name}
 							</a>
+							{#if item.active}
+								<span class="mt-1 inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+									<span class="size-1.5 rounded-full bg-emerald-500"></span> Actif
+								</span>
+							{/if}
 						</Table.Cell>
 						<Table.Cell class="text-muted-foreground">
 							{formatRelative(item.updatedAt)}{item.updatedBy ? ` · ${item.updatedBy}` : ''}

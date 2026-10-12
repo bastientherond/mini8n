@@ -6,7 +6,9 @@
 	import { TooltipProvider } from '$lib/components/ui/tooltip';
 	import AuthScreen from '$lib/components/AuthScreen.svelte';
 	import Onboarding from '$lib/components/Onboarding.svelte';
+	import PublicFormPage from '$lib/components/pages/PublicFormPage.svelte';
 	import AppShell from '$lib/components/shell/AppShell.svelte';
+	import { router } from '$lib/router.svelte';
 	import { session } from '$lib/session.svelte';
 	import { wf } from '$lib/workflow.svelte';
 
@@ -29,6 +31,10 @@
 {/snippet}
 
 <TooltipProvider>
+	{#if router.route.name === 'form'}
+		<!-- Formulaire public : accessible sans compte. -->
+		<PublicFormPage token={router.route.token} />
+	{:else}
 	{#await ready}
 		{@render centered('Chargement…')}
 	{:then}
@@ -51,4 +57,5 @@
 			{@render centered('Chargement…')}
 		{/if}
 	{/await}
+	{/if}
 </TooltipProvider>

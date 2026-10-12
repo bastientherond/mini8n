@@ -2,8 +2,10 @@
 // et synchronisation avec le serveur (workflows du workspace courant).
 
 import type { Edge, Node, XYPosition } from '@xyflow/svelte';
-import { ApiError, api, errorMessage, type WorkflowDoc, type WorkflowSummary } from './api';
+import { toast } from 'svelte-sonner';
+import { ApiError, api, errorMessage, type TriggerInfo, type WorkflowDoc, type WorkflowSummary } from './api';
 import { engine } from './engine/client';
+import { newToken, toEngineWorkflow } from './engine/convert';
 import type { EngineWorkflow, NodeResult, NodeSpec, RunReport } from './engine/types';
 import { sanitizeWorkflow } from './sanitize';
 
@@ -29,7 +31,6 @@ const LAST_WORKFLOW_KEY = 'mini8n.lastWorkflow';
 const SAVE_DELAY_MS = 800;
 
 export const inputHandle = (index: number) => `in-${index}`;
-const inputIndex = (handle: string | null | undefined) => Number(handle?.replace('in-', '') ?? 0) || 0;
 
 const uid = () => crypto.randomUUID().slice(0, 8);
 
@@ -52,9 +53,14 @@ class WorkflowState {
 	workflowId = $state<string | null>(null);
 	workflows = $state.raw<WorkflowSummary[]>([]);
 	saveState = $state<SaveState>('idle');
+	/** Workflow actif : ses déclencheurs automatiques sont en service sur le serveur. */
+	active = $state(false);
+	triggers = $state.raw<TriggerInfo[]>([]);
+	activating = $state(false);
 	saveError = $state<string | null>(null);
 	loading = $state(false);
 	private serverVersion = 0;
+	private wsLoad: { id: string; promise: Promise<void> } | null = null;
 	private savedSnapshot = '';
 	private saveTimer: ReturnType<typeof setTimeout> | undefined;
 	private saving: Promise<void> | null = null;
@@ -77,6 +83,17 @@ class WorkflowState {
 		return Object.fromEntries(spec.params.map((p) => [p.name, p.default]));
 	}
 
+	/** Génère les jetons d'URL publique manquants (webhook, formulaire). */
+	withTokens(spec: NodeSpec, params: Record<string, unknown>): Record<string, unknown> {
+		const out = { ...params };
+		for (const p of spec.params) if (p.type === 'token' && !out[p.name]) out[p.name] = newToken();
+		return out;
+	}
+
+	isTrigger(kind: string): boolean {
+		return this.spec(kind)?.category === 'trigger';
+	}
+
 	addNode(kind: string, position: XYPosition, select = true) {
 		const spec = this.spec(kind);
 		if (!spec) return;
@@ -88,7 +105,7 @@ class WorkflowState {
 			type: 'step',
 			position,
 			selected: select,
-			data: { kind, name, params: this.defaults(spec) },
+			data: { kind, name, params: this.withTokens(spec, this.defaults(spec)) },
 		};
 		const others = select ? this.nodes.map((n) => (n.selected ? { ...n, selected: false } : n)) : this.nodes;
 		this.nodes = [...others, node];
@@ -131,16 +148,7 @@ class WorkflowState {
 	}
 
 	toEngine(): EngineWorkflow {
-		return {
-			nodes: this.nodes.map((n) => ({
-				id: n.id,
-				kind: n.data.kind,
-				name: n.data.name,
-				params: n.data.params,
-				disabled: !!n.data.disabled,
-			})),
-			edges: this.edges.map((e) => ({ source: e.source, target: e.target, input: inputIndex(e.targetHandle) })),
-		};
+		return toEngineWorkflow({ nodes: this.nodes, edges: this.edges });
 	}
 
 	/** Exécute le workflow entier, ou seulement jusqu'au nœud `target`. */
@@ -150,7 +158,7 @@ class WorkflowState {
 		const workflow = this.toEngine();
 		this.runningIds = new Set(target ? this.ancestors(target) : workflow.nodes.map((n) => n.id));
 		try {
-			const { report, data } = await engine.run(workflow, target);
+			const { report, data } = await engine.run(workflow, target, this.workspaceId ?? undefined);
 			// Une exécution partielle conserve les résultats des autres nœuds.
 			this.results = target ? { ...this.results, ...report.results } : report.results;
 			const merged = target ? { ...this.data, ...data } : { ...data };
@@ -207,16 +215,26 @@ class WorkflowState {
 
 	/** Sélectionne un workspace : charge la liste de ses workflows (sans en ouvrir). */
 	async loadWorkspace(workspaceId: string) {
+		// Un chargement en cours pour ce workspace est partagé (éditeur ouvert par lien direct).
+		if (this.wsLoad?.id === workspaceId) return this.wsLoad.promise;
 		if (this.workspaceId === workspaceId) return this.refreshList();
-		await this.flush();
-		this.close();
-		this.workspaceId = workspaceId;
-		this.workflows = [];
-		this.loading = true;
+		const promise = (async () => {
+			await this.flush();
+			this.close();
+			this.workspaceId = workspaceId;
+			this.workflows = [];
+			this.loading = true;
+			try {
+				this.workflows = await api.workflows(workspaceId);
+			} finally {
+				this.loading = false;
+			}
+		})();
+		this.wsLoad = { id: workspaceId, promise };
 		try {
-			this.workflows = await api.workflows(workspaceId);
+			await promise;
 		} finally {
-			this.loading = false;
+			if (this.wsLoad?.promise === promise) this.wsLoad = null;
 		}
 	}
 
@@ -235,6 +253,8 @@ class WorkflowState {
 	close() {
 		clearTimeout(this.saveTimer);
 		this.workflowId = null;
+		this.active = false;
+		this.triggers = [];
 		this.apply({ version: 1, name: '', nodes: [], edges: [] });
 		this.saveState = 'idle';
 		this.saveError = null;
@@ -249,6 +269,9 @@ class WorkflowState {
 		this.apply(saved);
 		this.workflowId = doc.id;
 		this.serverVersion = doc.version;
+		this.active = doc.active;
+		this.triggers = [];
+		if (doc.active) void this.refreshTriggers();
 		this.savedSnapshot = this.snapshot();
 		this.saveState = 'saved';
 		this.saveError = null;
@@ -259,12 +282,13 @@ class WorkflowState {
 		}
 	}
 
-	async openWorkflow(id: string) {
-		if (!this.workspaceId || this.workflowId === id) return;
+	async openWorkflow(id: string, workspaceId: string) {
+		if (this.workspaceId !== workspaceId || this.wsLoad) await this.loadWorkspace(workspaceId);
+		if (this.workflowId === id) return;
 		await this.flush();
 		this.loading = true;
 		try {
-			this.adopt(await api.workflow(this.workspaceId, id));
+			this.adopt(await api.workflow(workspaceId, id));
 		} finally {
 			this.loading = false;
 		}
@@ -281,8 +305,20 @@ class WorkflowState {
 
 	/** Importe un fichier : validé puis créé comme nouveau workflow du workspace. */
 	async importWorkflow(raw: unknown): Promise<string> {
-		const clean = sanitizeWorkflow(raw, this.catalog);
+		const clean = this.freshTokens(sanitizeWorkflow(raw, this.catalog));
 		return this.createWorkflow(clean.name, clean);
+	}
+
+	/** Nouvelles URL publiques pour une copie (une URL ne peut servir qu'un workflow). */
+	private freshTokens(saved: SavedWorkflow): SavedWorkflow {
+		const nodes = saved.nodes.map((n) => {
+			const spec = this.spec(n.data.kind);
+			if (!spec?.params.some((p) => p.type === 'token')) return n;
+			const params = { ...n.data.params };
+			for (const p of spec.params) if (p.type === 'token') params[p.name] = newToken();
+			return { ...n, data: { ...n.data, params } };
+		});
+		return { ...saved, nodes };
 	}
 
 	/** Copie un workflow existant du workspace. */
@@ -290,7 +326,7 @@ class WorkflowState {
 		if (!this.workspaceId) throw new Error('Aucun workspace sélectionné');
 		if (id === this.workflowId) await this.flush();
 		const doc = await api.workflow(this.workspaceId, id);
-		const clean = sanitizeWorkflow({ ...(doc.definition as object), name: doc.name }, this.catalog);
+		const clean = this.freshTokens(sanitizeWorkflow({ ...(doc.definition as object), name: doc.name }, this.catalog));
 		return this.createWorkflow(`${doc.name} (copie)`.slice(0, 120), clean);
 	}
 
@@ -356,6 +392,14 @@ class WorkflowState {
 				if (this.workflowId !== workflowId) return;
 				this.serverVersion = doc.version;
 				this.savedSnapshot = snapshot;
+				if (doc.deactivated) {
+					this.active = false;
+					this.triggers = [];
+					toast.warning(`Workflow désactivé : ${doc.deactivated}`);
+				} else if (doc.active) {
+					void this.refreshTriggers();
+				}
+				this.setSummary(workflowId, { active: doc.active, version: doc.version });
 				this.saveState = 'saved';
 				this.saveError = null;
 				const summary = this.workflows.find((w) => w.id === workflowId);
@@ -372,6 +416,55 @@ class WorkflowState {
 		await this.saving;
 	}
 
+	private setSummary(id: string, patch: Partial<WorkflowSummary>) {
+		this.workflows = this.workflows.map((w) => (w.id === id ? { ...w, ...patch } : w));
+	}
+
+	async refreshTriggers() {
+		if (!this.workspaceId || !this.workflowId) return;
+		const id = this.workflowId;
+		try {
+			const state = await api.triggers(this.workspaceId, id);
+			if (this.workflowId !== id) return;
+			this.active = state.active;
+			this.triggers = state.triggers;
+		} catch {
+			// informatif uniquement
+		}
+	}
+
+	/** Active / désactive les déclencheurs automatiques (après sauvegarde des modifications). */
+	async setActive(active: boolean) {
+		if (!this.workspaceId || !this.workflowId || this.activating) return;
+		this.activating = true;
+		try {
+			await this.flush();
+			if (this.saveState === 'error' || this.saveState === 'conflict') {
+				throw new Error("Enregistrez d'abord le workflow");
+			}
+			const state = await api.setActive(this.workspaceId, this.workflowId, active);
+			this.active = state.active;
+			this.triggers = state.triggers;
+			this.setSummary(this.workflowId, { active: state.active });
+			toast.success(state.active ? 'Workflow activé : les déclencheurs sont en service' : 'Workflow désactivé');
+		} catch (e) {
+			toast.error(errorMessage(e));
+		} finally {
+			this.activating = false;
+		}
+	}
+
+	/** Exécute le workflow sur le serveur (enregistré dans l'historique). */
+	async runOnServer() {
+		if (!this.workspaceId || !this.workflowId) return null;
+		await this.flush();
+		return api.runOnServer(this.workspaceId, this.workflowId);
+	}
+
+	trigger(nodeId: string): TriggerInfo | undefined {
+		return this.triggers.find((t) => t.nodeId === nodeId);
+	}
+
 	reset() {
 		this.close();
 		this.workspaceId = null;
@@ -381,7 +474,7 @@ class WorkflowState {
 	example(): SavedWorkflow {
 		const node = (id: string, kind: string, x: number, y: number, params: Record<string, unknown> = {}, name?: string): SavedWorkflow['nodes'][number] => {
 			const spec = this.spec(kind)!;
-			return { id, position: { x, y }, data: { kind, name: name ?? spec.label, params: { ...this.defaults(spec), ...params } } };
+			return { id, position: { x, y }, data: { kind, name: name ?? spec.label, params: this.withTokens(spec, { ...this.defaults(spec), ...params }) } };
 		};
 		const edge = (source: string, target: string, input = 0) => ({
 			id: `e-${source}-${target}-${input}`,

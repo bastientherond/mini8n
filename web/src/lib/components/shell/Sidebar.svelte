@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Component } from 'svelte';
+	import History from '@lucide/svelte/icons/history';
 	import House from '@lucide/svelte/icons/house';
 	import ListTree from '@lucide/svelte/icons/list-tree';
 	import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
@@ -56,6 +57,7 @@
 				{ label: 'Accueil', icon: House, route: { name: 'home', ws }, active: name === 'home' },
 				{ label: 'Éditeur', icon: SquarePen, route: editorTarget, active: name === 'editor' },
 				{ label: 'Workflows', icon: ListTree, route: { name: 'workflows', ws }, active: name === 'workflows' },
+				{ label: 'Exécutions', icon: History, route: { name: 'executions', ws }, active: name === 'executions' },
 			],
 			[{ label: 'Membres', icon: Users, route: { name: 'members', ws }, active: name === 'members' }],
 			[

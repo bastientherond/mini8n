@@ -21,12 +21,13 @@
 <div
 	class={cn(
 		'group bg-card text-card-foreground relative w-56 rounded-xl border shadow-sm transition-[box-shadow,border-color]',
+		spec?.category === 'trigger' && 'rounded-l-[28px]',
 		selected && 'border-primary ring-primary/20 ring-4',
 		result?.status === 'error' && 'border-destructive',
 		data.disabled && 'opacity-50',
 	)}
 >
-	<div class="flex items-center gap-2.5 p-3">
+	<div class={cn('flex items-center gap-2.5 p-3', spec?.category === 'trigger' && 'pl-4')}>
 		<div class={cn('flex size-9 shrink-0 items-center justify-center rounded-lg', categoryAccent[spec?.category ?? 'transform'])}>
 			<Icon class="size-[18px]" />
 		</div>

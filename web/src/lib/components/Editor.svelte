@@ -36,7 +36,7 @@
 	// Ouvre le workflow désigné par l'URL.
 	$effect(() => {
 		const id = workflowId;
-		untrack(() => wf.openWorkflow(id))
+		untrack(() => wf.openWorkflow(id, workspaceId))
 			.then(fit)
 			.catch((e) => {
 				toast.error(`Ouverture impossible : ${errorMessage(e)}`);

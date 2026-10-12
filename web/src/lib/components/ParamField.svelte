@@ -1,22 +1,49 @@
 <script lang="ts">
+	import Copy from '@lucide/svelte/icons/copy';
+	import ExternalLink from '@lucide/svelte/icons/external-link';
+	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+	import { toast } from 'svelte-sonner';
+	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import * as Select from '$lib/components/ui/select';
 	import { Switch } from '$lib/components/ui/switch';
 	import { Textarea } from '$lib/components/ui/textarea';
+	import { newToken } from '$lib/engine/convert';
 	import type { ParamSpec } from '$lib/engine/types';
+	import { wf } from '$lib/workflow.svelte';
 
 	let {
 		param,
 		value,
 		columns = [],
+		nodeKind = '',
 		onchange,
 	}: {
 		param: ParamSpec;
 		value: unknown;
 		columns?: string[];
+		nodeKind?: string;
 		onchange: (value: unknown) => void;
 	} = $props();
+
+	/** URL publique d'un jeton (webhook : API ; formulaire : page de l'application). */
+	const publicUrl = $derived.by(() => {
+		if (param.type !== 'token' || !value) return '';
+		const token = encodeURIComponent(String(value));
+		return nodeKind === 'trigger_form' ? `${location.origin}/#/f/${token}` : `${location.origin}/api/hooks/${token}`;
+	});
+
+	const otherWorkflows = $derived(wf.workflows.filter((w) => w.id !== wf.workflowId));
+
+	async function copy(text: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+			toast.success('URL copiée');
+		} catch {
+			toast.error('Copie impossible');
+		}
+	}
 
 	const fieldId = $derived(`param-${param.name}`);
 	const text = $derived(value == null ? '' : String(value));
@@ -65,6 +92,40 @@
 			placeholder={param.placeholder}
 			oninput={(e) => onchange(e.currentTarget.value === '' ? null : Number(e.currentTarget.value))}
 		/>
+	{:else if param.type === 'token'}
+		<div class="flex gap-1">
+			<Input id={fieldId} value={publicUrl} readonly class="font-mono text-xs" onfocus={(e) => e.currentTarget.select()} />
+			<Button variant="outline" size="icon" onclick={() => copy(publicUrl)} aria-label="Copier l'URL" title="Copier" disabled={!publicUrl}>
+				<Copy />
+			</Button>
+			{#if nodeKind === 'trigger_form' && publicUrl}
+				<Button variant="outline" size="icon" href={publicUrl} target="_blank" rel="noopener" aria-label="Ouvrir le formulaire" title="Ouvrir">
+					<ExternalLink />
+				</Button>
+			{/if}
+			<Button
+				variant="outline"
+				size="icon"
+				onclick={() => onchange(newToken())}
+				aria-label="Régénérer l'URL"
+				title="Régénérer (l'ancienne URL cessera de fonctionner)"
+			>
+				<RefreshCw />
+			</Button>
+		</div>
+	{:else if param.type === 'workflow'}
+		<Select.Root type="single" value={text} onValueChange={(v) => onchange(v)}>
+			<Select.Trigger id={fieldId} class="w-full">
+				{wf.workflows.find((w) => w.id === text)?.name ?? (text ? 'Workflow introuvable' : 'Choisir un workflow…')}
+			</Select.Trigger>
+			<Select.Content>
+				{#each otherWorkflows as item (item.id)}
+					<Select.Item value={item.id} label={item.name}>{item.name}</Select.Item>
+				{:else}
+					<p class="text-muted-foreground px-2 py-1.5 text-sm">Aucun autre workflow dans ce workspace.</p>
+				{/each}
+			</Select.Content>
+		</Select.Root>
 	{:else if param.type === 'select'}
 		<Select.Root type="single" value={text} onValueChange={(v) => onchange(v)}>
 			<Select.Trigger id={fieldId} class="w-full">{text || 'Choisir…'}</Select.Trigger>

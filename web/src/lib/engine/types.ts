@@ -1,6 +1,15 @@
 // Types partagés avec le moteur Rust (voir crates/engine/src/catalog.rs et workflow.rs).
 
-export type ParamType = 'string' | 'text' | 'expression' | 'json' | 'number' | 'boolean' | 'select';
+export type ParamType =
+	| 'string'
+	| 'text'
+	| 'expression'
+	| 'json'
+	| 'number'
+	| 'boolean'
+	| 'select'
+	| 'token'
+	| 'workflow';
 
 export interface ParamSpec {
 	name: string;
@@ -12,7 +21,7 @@ export interface ParamSpec {
 	help?: string;
 }
 
-export type Category = 'source' | 'transform' | 'combine';
+export type Category = 'trigger' | 'source' | 'transform' | 'combine' | 'flow';
 
 export interface NodeSpec {
 	kind: string;
@@ -46,6 +55,8 @@ export interface RunReport {
 	order: string[];
 	results: Record<string, NodeResult>;
 	durationMs: number;
+	/** Nœud de sortie : dernier nœud terminal exécuté avec succès. */
+	output?: string;
 }
 
 export interface RunOutput {

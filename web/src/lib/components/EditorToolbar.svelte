@@ -4,6 +4,8 @@
 	import Copy from '@lucide/svelte/icons/copy';
 	import Download from '@lucide/svelte/icons/download';
 	import Ellipsis from '@lucide/svelte/icons/ellipsis';
+	import History from '@lucide/svelte/icons/history';
+	import Server from '@lucide/svelte/icons/server';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Play from '@lucide/svelte/icons/play';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
@@ -11,10 +13,35 @@
 	import { Button } from '$lib/components/ui/button';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import { Input } from '$lib/components/ui/input';
+	import { Switch } from '$lib/components/ui/switch';
+	import { toast } from 'svelte-sonner';
+	import { errorMessage } from '$lib/api';
+	import { router } from '$lib/router.svelte';
 	import { attempt, duplicateWorkflow, exportWorkflow, ui } from '$lib/ui.svelte';
 	import { wf } from '$lib/workflow.svelte';
 
 	let { onrun }: { onrun: () => void } = $props();
+
+	let serverRunning = $state(false);
+
+	async function runOnServer() {
+		serverRunning = true;
+		try {
+			const res = await wf.runOnServer();
+			if (!res) return;
+			if (res.status === 'success') toast.success('Exécution serveur réussie', { action: { label: 'Voir', onClick: openExecutions } });
+			else if (res.status === 'error') toast.error(res.error ?? 'Exécution serveur en échec', { action: { label: 'Voir', onClick: openExecutions } });
+			else toast.info('Exécution serveur en cours…', { action: { label: 'Voir', onClick: openExecutions } });
+		} catch (e) {
+			toast.error(errorMessage(e));
+		} finally {
+			serverRunning = false;
+		}
+	}
+
+	function openExecutions() {
+		if (wf.workspaceId) router.go({ name: 'executions', ws: wf.workspaceId });
+	}
 
 	const summary = $derived.by(() => {
 		const run = wf.lastRun;
@@ -50,6 +77,20 @@
 	</span>
 
 	<div class="ml-auto flex items-center gap-2">
+		<label
+			class="hover:bg-accent flex h-8 cursor-pointer items-center gap-2 rounded-md border px-2.5 text-xs font-medium"
+			title="Met en service les déclencheurs automatiques (planification, webhook, formulaire…)"
+		>
+			<span class={wf.active ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}>
+				{wf.active ? 'Actif' : 'Inactif'}
+			</span>
+			<Switch
+				checked={wf.active}
+				disabled={!wf.workflowId || wf.activating}
+				onCheckedChange={(v) => wf.setActive(v)}
+				aria-label="Activer le workflow"
+			/>
+		</label>
 		{#if summary && !wf.running}
 			{#if summary.ok}
 				<Badge variant="secondary">Succès · {summary.ms.toFixed(0)} ms</Badge>
@@ -65,7 +106,13 @@
 					</Button>
 				{/snippet}
 			</DropdownMenu.Trigger>
-			<DropdownMenu.Content align="end" class="w-52">
+			<DropdownMenu.Content align="end" class="w-60">
+				<DropdownMenu.Item onclick={runOnServer} disabled={serverRunning}>
+					{#if serverRunning}<LoaderCircle class="animate-spin" />{:else}<Server />{/if}
+					Exécuter sur le serveur
+				</DropdownMenu.Item>
+				<DropdownMenu.Item onclick={openExecutions}><History /> Voir les exécutions</DropdownMenu.Item>
+				<DropdownMenu.Separator />
 				<DropdownMenu.Item onclick={() => wf.workflowId && duplicateWorkflow(wf.workflowId)}><Copy /> Dupliquer</DropdownMenu.Item>
 				<DropdownMenu.Item onclick={() => wf.workflowId && exportWorkflow(wf.workflowId)}><Download /> Exporter (.json)</DropdownMenu.Item>
 				<DropdownMenu.Separator />

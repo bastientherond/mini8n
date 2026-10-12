@@ -34,6 +34,7 @@ export interface WorkflowSummary {
 	id: string;
 	name: string;
 	version: number;
+	active: boolean;
 	updatedAt: string;
 	updatedBy: string | null;
 }
@@ -42,8 +43,58 @@ export interface WorkflowDoc {
 	id: string;
 	name: string;
 	version: number;
+	active: boolean;
 	definition: unknown;
 	updatedAt: string;
+	/** Motif de désactivation automatique après une sauvegarde. */
+	deactivated?: string;
+}
+
+export type TriggerKind = 'manual' | 'schedule' | 'webhook' | 'form' | 'poll' | 'workflow' | 'error';
+
+export interface TriggerInfo {
+	nodeId: string;
+	kind: TriggerKind;
+	token: string | null;
+	nextRunAt: string | null;
+	lastError?: string;
+}
+
+export interface ActivationState {
+	active: boolean;
+	triggers: TriggerInfo[];
+}
+
+export type ExecutionStatus = 'running' | 'success' | 'error';
+
+export interface ExecutionSummary {
+	id: string;
+	workflowId: string | null;
+	workflowName: string;
+	triggerKind: TriggerKind;
+	triggerNode: string | null;
+	parentId: string | null;
+	status: ExecutionStatus;
+	error: string | null;
+	startedAt: string;
+	finishedAt: string | null;
+	durationMs: number | null;
+}
+
+export interface ExecutionDetail extends ExecutionSummary {
+	report: {
+		order?: string[];
+		names?: Record<string, string>;
+		results?: Record<string, { status: string; error?: string; rows: number; durationMs: number }>;
+		output?: string;
+	} | null;
+	output: { columns: { name: string; type: string }[]; rows: Record<string, unknown>[]; total: number } | null;
+}
+
+export interface PublicForm {
+	title: string;
+	description: string;
+	fields: { key: string; label: string; kind: string; required: boolean }[];
 }
 
 export class ApiError extends Error {
@@ -132,6 +183,28 @@ export const api = {
 		),
 	deleteWorkflow: (id: string, wid: string) =>
 		request<void>('DELETE', `${ws(id)}/workflows/${encodeURIComponent(wid)}`),
+
+	triggers: (id: string, wid: string) =>
+		request<ActivationState>('GET', `${ws(id)}/workflows/${encodeURIComponent(wid)}/triggers`),
+	setActive: (id: string, wid: string, active: boolean) =>
+		request<ActivationState>('PUT', `${ws(id)}/workflows/${encodeURIComponent(wid)}/active`, { active }),
+	runOnServer: (id: string, wid: string) =>
+		request<{ executionId: string; status: ExecutionStatus | 'running'; error?: string }>(
+			'POST',
+			`${ws(id)}/workflows/${encodeURIComponent(wid)}/run`,
+		),
+
+	executions: (id: string, params: { workflow?: string; status?: string; before?: string; limit?: number } = {}) => {
+		const q = new URLSearchParams();
+		for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') q.set(k, String(v));
+		const qs = q.toString();
+		return request<ExecutionSummary[]>('GET', `${ws(id)}/executions${qs ? `?${qs}` : ''}`);
+	},
+	execution: (id: string, eid: string) => request<ExecutionDetail>('GET', `${ws(id)}/executions/${encodeURIComponent(eid)}`),
+
+	publicForm: (token: string) => request<PublicForm>('GET', `/forms/${encodeURIComponent(token)}`),
+	submitForm: (token: string, values: Record<string, unknown>) =>
+		request<{ message: string }>('POST', `/forms/${encodeURIComponent(token)}`, { values }),
 };
 
 export const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
