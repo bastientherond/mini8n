@@ -66,6 +66,9 @@ class WorkflowState {
 	private saving: Promise<void> | null = null;
 
 	selected = $derived(this.nodes.find((n) => n.selected) ?? null);
+	/** Nœud affiché dans la vue détaillée (modale de paramétrage). */
+	openNodeId = $state<string | null>(null);
+	openNode = $derived(this.openNodeId ? (this.nodes.find((n) => n.id === this.openNodeId) ?? null) : null);
 
 	async loadCatalog() {
 		try {
@@ -253,6 +256,7 @@ class WorkflowState {
 	close() {
 		clearTimeout(this.saveTimer);
 		this.workflowId = null;
+		this.openNodeId = null;
 		this.active = false;
 		this.triggers = [];
 		this.apply({ version: 1, name: '', nodes: [], edges: [] });

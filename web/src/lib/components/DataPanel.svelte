@@ -13,11 +13,23 @@
 	import { engine } from '$lib/engine/client';
 	import type { Preview } from '$lib/engine/types';
 	import { formatBytes, formatCount } from '$lib/icons';
+	import type { Snippet } from 'svelte';
 	import { wf } from '$lib/workflow.svelte';
 
 	const PAGE = 50;
 
-	const node = $derived(wf.selected);
+	let {
+		nodeId,
+		label = 'Sortie',
+		emptyAction,
+	}: {
+		nodeId: string | null;
+		label?: string;
+		/** Action proposée quand le nœud n'a pas encore de données (ex. bouton Exécuter). */
+		emptyAction?: Snippet;
+	} = $props();
+
+	const node = $derived(nodeId ? (wf.nodes.find((n) => n.id === nodeId) ?? null) : null);
 	const result = $derived(node ? wf.results[node.id] : undefined);
 	const bytes = $derived(node ? wf.data[node.id] : undefined);
 
@@ -94,12 +106,12 @@
 <section class="bg-background flex h-full min-h-0 flex-col">
 	{#if !node}
 		<div class="text-muted-foreground flex flex-1 items-center justify-center gap-2 text-sm">
-			<Table2 class="size-4" /> Sélectionne un nœud pour voir ses données de sortie.
+			<Table2 class="size-4" /> Aucune donnée.
 		</div>
 	{:else}
 		<Tabs.Root value="table" class="flex min-h-0 flex-1 flex-col gap-0">
 			<div class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2">
-				<span class="text-sm font-medium">Sortie · {node.data.name}</span>
+				<span class="text-sm font-medium">{label} · {node.data.name}</span>
 				{#if result?.status === 'success'}
 					<Badge variant="secondary">{formatCount(result.rows)} lignes</Badge>
 					<Badge variant="secondary">{result.columns.length} colonnes</Badge>
@@ -140,8 +152,9 @@
 					<pre class="font-mono text-xs whitespace-pre-wrap">{result.error}</pre>
 				</div>
 			{:else if !bytes}
-				<div class="text-muted-foreground flex flex-1 items-center justify-center text-sm">
-					Exécute le workflow (ou ce nœud) pour voir ses données.
+				<div class="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-sm">
+					<p>Pas encore de données : exécutez le nœud pour les voir.</p>
+					{@render emptyAction?.()}
 				</div>
 			{:else if previewError}
 				<p class="text-destructive p-4 text-sm">{previewError}</p>

@@ -5,6 +5,7 @@
 	import CircleMinus from '@lucide/svelte/icons/circle-minus';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Play from '@lucide/svelte/icons/play';
+	import Settings2 from '@lucide/svelte/icons/settings-2';
 	import { cn } from '$lib/utils';
 	import { categoryAccent, formatCount, iconFor } from '$lib/icons';
 	import { inputHandle, wf, type StepNode } from '$lib/workflow.svelte';
@@ -19,6 +20,9 @@
 </script>
 
 <div
+	ondblclick={() => (wf.openNodeId = id)}
+	role="group"
+	title="Double-cliquez pour paramétrer"
 	class={cn(
 		'group bg-card text-card-foreground relative w-56 rounded-xl border shadow-sm transition-[box-shadow,border-color]',
 		spec?.category === 'trigger' && 'rounded-l-[28px]',
@@ -35,6 +39,17 @@
 			<div class="truncate text-sm leading-tight font-medium">{data.name}</div>
 			<div class="text-muted-foreground truncate text-xs">{spec?.label ?? data.kind}</div>
 		</div>
+		<button
+			class="nodrag text-muted-foreground hover:text-foreground hover:bg-accent hidden size-7 items-center justify-center rounded-md group-hover:flex"
+			title="Paramétrer"
+			aria-label="Paramétrer le nœud"
+			onclick={(e) => {
+				e.stopPropagation();
+				wf.openNodeId = id;
+			}}
+		>
+			<Settings2 class="size-3.5" />
+		</button>
 		<button
 			class="nodrag text-muted-foreground hover:text-foreground hover:bg-accent -mr-1 hidden size-7 items-center justify-center rounded-md group-hover:flex"
 			title="Exécuter jusqu'ici"
