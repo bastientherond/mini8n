@@ -95,15 +95,16 @@
 						<a
 							href={href(item.route)}
 							class={cn(
-								'mx-2 flex h-9 items-center gap-3 rounded-md px-2.5 text-sm whitespace-nowrap transition-colors',
+								'relative mx-2 flex h-9 items-center gap-3 rounded-lg px-2.5 text-sm whitespace-nowrap transition-colors',
 								item.active
-									? 'bg-accent text-foreground font-medium'
-									: 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
+									? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
+									: 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
 							)}
 							aria-current={item.active ? 'page' : undefined}
 							title={expanded ? undefined : item.label}
 						>
-							<Icon class="size-[18px] shrink-0" />
+							{#if item.active}<span class="bg-primary absolute top-2 bottom-2 -left-2 w-[3px] rounded-r-full"></span>{/if}
+							<Icon class={cn('size-[18px] shrink-0', item.active && 'text-primary')} />
 							<span class={cn('transition-opacity', expanded ? 'opacity-100' : 'opacity-0')}>{item.label}</span>
 						</a>
 					{:else}

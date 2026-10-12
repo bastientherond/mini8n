@@ -2,7 +2,7 @@
 	import Eye from '@lucide/svelte/icons/eye';
 	import EyeOff from '@lucide/svelte/icons/eye-off';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
-	import Workflow from '@lucide/svelte/icons/workflow';
+	import AuthLayout from './AuthLayout.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
@@ -57,25 +57,18 @@
 	}
 </script>
 
-<div class="bg-muted/40 flex min-h-dvh items-center justify-center p-4">
-	<div class="w-full max-w-sm space-y-6">
-		<div class="flex items-center justify-center gap-2 text-lg font-semibold">
-			<span class="bg-primary text-primary-foreground flex size-8 items-center justify-center rounded-lg">
-				<Workflow class="size-5" />
-			</span>
-			mini8n
-		</div>
-
-		<Card.Root>
-			<Card.Header>
-				<Card.Title class="text-xl">{registering ? 'Créer un compte' : 'Se connecter'}</Card.Title>
+<AuthLayout>
+		<Card.Root class="gap-5 border-0 bg-transparent py-0 shadow-none ring-0">
+			<Card.Header class="px-0">
+				{#if registering}<p class="text-primary text-xs font-semibold tracking-wide uppercase">Étape 1 sur 2</p>{/if}
+				<Card.Title class="text-2xl font-semibold tracking-tight">{registering ? 'Créer un compte' : 'Bon retour parmi nous'}</Card.Title>
 				<Card.Description>
 					{registering
 						? 'Commencez par créer votre compte, puis votre premier workspace.'
-						: 'Accédez à vos workspaces et workflows.'}
+						: 'Connectez-vous pour accéder à vos workspaces et workflows.'}
 				</Card.Description>
 			</Card.Header>
-			<Card.Content>
+			<Card.Content class="px-0">
 				<form class="space-y-4" onsubmit={submit} novalidate>
 					{#if session.notice && !registering}
 						<p class="bg-muted rounded-md p-2.5 text-sm">{session.notice}</p>
@@ -144,23 +137,22 @@
 						<p class="text-destructive text-sm" role="alert">{error}</p>
 					{/if}
 
-					<Button type="submit" class="w-full" disabled={!canSubmit}>
+					<Button type="submit" size="lg" class="w-full" disabled={!canSubmit}>
 						{#if busy}<LoaderCircle class="animate-spin" />{/if}
 						{registering ? 'Créer mon compte' : 'Se connecter'}
 					</Button>
 				</form>
 			</Card.Content>
-			<Card.Footer class="justify-center text-sm">
+			<Card.Footer class="text-muted-foreground justify-center border-t bg-transparent px-0 pt-5 text-sm">
 				{#if registering}
 					Déjà un compte ?
-					<button class="ml-1 font-medium underline underline-offset-4" onclick={() => switchMode('login')}>Se connecter</button>
+					<button class="text-primary ml-1 font-medium hover:underline" onclick={() => switchMode('login')}>Se connecter</button>
 				{:else if session.allowRegistration}
 					Pas encore de compte ?
-					<button class="ml-1 font-medium underline underline-offset-4" onclick={() => switchMode('register')}>Créer un compte</button>
+					<button class="text-primary ml-1 font-medium hover:underline" onclick={() => switchMode('register')}>Créer un compte</button>
 				{:else}
 					<span class="text-muted-foreground">Les inscriptions sont fermées.</span>
 				{/if}
 			</Card.Footer>
 		</Card.Root>
-	</div>
-</div>
+</AuthLayout>

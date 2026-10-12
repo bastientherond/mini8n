@@ -21,9 +21,14 @@
 	const ws = $derived(session.current!);
 	const recent = $derived(wf.workflows.slice(0, 6));
 	const stats = $derived([
-		{ label: 'Workflows', value: wf.workflows.length, icon: WorkflowIcon },
-		{ label: 'Membres', value: ws.memberCount, icon: Users },
-		{ label: 'Votre rôle', value: ws.role === 'owner' ? 'Propriétaire' : 'Membre', icon: ShieldCheck },
+		{ label: 'Workflows', value: wf.workflows.length, icon: WorkflowIcon, tone: 'bg-primary/10 text-primary' },
+		{ label: 'Membres', value: ws.memberCount, icon: Users, tone: 'bg-sky-500/10 text-sky-600 dark:text-sky-400' },
+		{
+			label: 'Votre rôle',
+			value: ws.role === 'owner' ? 'Propriétaire' : 'Membre',
+			icon: ShieldCheck,
+			tone: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+		},
 	]);
 </script>
 
@@ -36,12 +41,12 @@
 	<div class="mb-8 grid gap-3 sm:grid-cols-3">
 		{#each stats as stat (stat.label)}
 			{@const Icon = stat.icon}
-			<Card.Root class="gap-1 py-4">
-				<Card.Content class="flex items-center gap-3 px-4">
-					<span class="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-lg"><Icon class="size-4" /></span>
+			<Card.Root class="gap-1 py-5 shadow-sm">
+				<Card.Content class="flex items-center gap-4 px-5">
+					<span class={['flex size-11 items-center justify-center rounded-xl', stat.tone]}><Icon class="size-5" /></span>
 					<div>
-						<div class="text-muted-foreground text-xs">{stat.label}</div>
-						<div class="text-lg font-semibold">{stat.value}</div>
+						<div class="text-muted-foreground text-xs font-medium">{stat.label}</div>
+						<div class="text-xl font-semibold tracking-tight tabular-nums">{stat.value}</div>
 					</div>
 				</Card.Content>
 			</Card.Root>
@@ -49,7 +54,7 @@
 	</div>
 
 	<div class="mb-3 flex items-center justify-between">
-		<h2 class="text-sm font-medium">Workflows récents</h2>
+		<h2 class="text-base font-semibold tracking-tight">Workflows récents</h2>
 		{#if wf.workflows.length > 0}
 			<a href={href({ name: 'workflows', ws: ws.id })} class="text-muted-foreground hover:text-foreground flex items-center gap-1 text-sm">
 				Tout voir <ArrowRight class="size-3.5" />
@@ -60,8 +65,8 @@
 	{#if wf.loading}
 		<div class="text-muted-foreground flex items-center gap-2 py-10 text-sm"><LoaderCircle class="size-4 animate-spin" /> Chargement…</div>
 	{:else if recent.length === 0}
-		<div class="flex flex-col items-center gap-4 rounded-xl border border-dashed px-6 py-12 text-center">
-			<span class="bg-muted flex size-12 items-center justify-center rounded-xl"><WorkflowIcon class="size-6" /></span>
+		<div class="bg-card/50 flex flex-col items-center gap-4 rounded-2xl border border-dashed px-6 py-14 text-center">
+			<span class="bg-brand flex size-14 items-center justify-center rounded-2xl text-white shadow-lg shadow-primary/25"><WorkflowIcon class="size-7" /></span>
 			<div>
 				<p class="font-medium">Aucun workflow dans ce workspace</p>
 				<p class="text-muted-foreground text-sm">Partez d'un canevas vide ou de l'exemple fourni.</p>
@@ -76,11 +81,11 @@
 			{#each recent as item (item.id)}
 				<a
 					href={href({ name: 'editor', ws: ws.id, workflow: item.id })}
-					class="group bg-card hover:border-foreground/20 flex flex-col gap-3 rounded-xl border p-4 transition-colors"
+					class="group bg-card hover:border-primary/40 flex flex-col gap-4 rounded-xl border p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
 				>
 					<div class="flex items-start justify-between gap-2">
-						<span class="bg-muted text-muted-foreground flex size-8 items-center justify-center rounded-lg"><FileText class="size-4" /></span>
-						<ArrowRight class="text-muted-foreground size-4 opacity-0 transition-opacity group-hover:opacity-100" />
+						<span class="bg-primary/10 text-primary flex size-9 items-center justify-center rounded-lg"><FileText class="size-4" /></span>
+						<ArrowRight class="text-primary size-4 -translate-x-1 opacity-0 transition-all group-hover:translate-x-0 group-hover:opacity-100" />
 					</div>
 					<div class="min-w-0">
 						<div class="truncate font-medium">{item.name}</div>

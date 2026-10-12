@@ -51,7 +51,7 @@
 	});
 </script>
 
-<div class="bg-background flex h-11 shrink-0 items-center gap-2 border-b px-3">
+<div class="bg-background/80 supports-[backdrop-filter]:bg-background/70 flex h-12 shrink-0 items-center gap-2 border-b px-3 backdrop-blur">
 	<Input
 		bind:value={wf.name}
 		class="h-8 w-72 border-transparent px-1.5 font-medium shadow-none hover:border-input"
@@ -124,7 +124,7 @@
 				</DropdownMenu.Item>
 			</DropdownMenu.Content>
 		</DropdownMenu.Root>
-		<Button size="sm" onclick={onrun} disabled={wf.running || !wf.workflowId} title="⌘/Ctrl + Entrée">
+		<Button size="sm" class="shadow-primary/25 shadow-md" onclick={onrun} disabled={wf.running || !wf.workflowId} title="⌘/Ctrl + Entrée">
 			{#if wf.running}<LoaderCircle class="animate-spin" />{:else}<Play />{/if}
 			Exécuter
 		</Button>

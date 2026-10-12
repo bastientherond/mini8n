@@ -12,7 +12,9 @@
 	} from '@xyflow/svelte';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Plus from '@lucide/svelte/icons/plus';
-	import { iconFor } from '$lib/icons';
+	import Zap from '@lucide/svelte/icons/zap';
+	import { categoryAccent, iconFor } from '$lib/icons';
+	import { cn } from '$lib/utils';
 	import { mode } from 'mode-watcher';
 	import { onMount, untrack } from 'svelte';
 	import { toast } from 'svelte-sonner';
@@ -170,7 +172,13 @@
 			<Palette onadd={addAtCenter} onclose={() => setPalette(false)} />
 		{/if}
 		<main class="flex min-w-0 flex-1 flex-col">
-			<div class="relative min-h-0 flex-1" bind:this={canvas} role="application" {ondragover} {ondrop}>
+			<div
+				class={['relative min-h-0 flex-1', wf.running && 'mini8n-running']}
+				bind:this={canvas}
+				role="application"
+				{ondragover}
+				{ondrop}
+			>
 				<SvelteFlow
 					bind:nodes={wf.nodes}
 					bind:edges={wf.edges}
@@ -184,13 +192,13 @@
 					snapGrid={[16, 16]}
 					deleteKey={wf.openNodeId ? null : ['Backspace', 'Delete']}
 				>
-					<Background variant={BackgroundVariant.Dots} gap={16} />
+					<Background variant={BackgroundVariant.Dots} gap={20} size={1.5} />
 					<Controls showLock={false} />
 					<MiniMap pannable zoomable class="hidden lg:block" />
 				</SvelteFlow>
 				{#if !paletteOpen}
 					<button
-						class="bg-card hover:bg-accent absolute top-3 left-3 z-10 flex h-8 items-center gap-1.5 rounded-lg border px-3 text-sm font-medium shadow-sm"
+						class="bg-primary text-primary-foreground hover:bg-primary/90 absolute top-3 left-3 z-10 flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium shadow-md shadow-primary/20"
 						onclick={() => setPalette(true)}
 					>
 						<Plus class="size-4" /> Ajouter un nœud
@@ -199,16 +207,22 @@
 				{#if !wf.loading && wf.workflowId && wf.nodes.length === 0}
 					<!-- Canevas vide : par où commencer. -->
 					<div class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-6">
-						<div class="bg-card pointer-events-auto w-full max-w-md rounded-xl border p-5 shadow-sm">
-							<p class="font-medium">Commencez par un déclencheur</p>
+						<div class="bg-card pointer-events-auto w-full max-w-md rounded-2xl border p-6 shadow-xl shadow-black/5">
+							<span class="bg-brand mb-3 flex size-10 items-center justify-center rounded-xl text-white shadow-md shadow-primary/30">
+								<Zap class="size-5" />
+							</span>
+							<p class="font-semibold">Commencez par un déclencheur</p>
 							<p class="text-muted-foreground mt-1 text-sm">Il définit quand le workflow démarre. Ajoutez ensuite des nœuds à sa suite.</p>
 							<div class="mt-4 grid grid-cols-2 gap-2">
 								{#each starters as kind (kind)}
 									{@const spec = wf.spec(kind)}
 									{#if spec}
 										{@const Icon = iconFor(spec.icon)}
-										<button class="hover:bg-accent flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm" onclick={() => addAtCenter(kind)}>
-											<Icon class="size-4 text-amber-600 dark:text-amber-400" />
+										<button
+											class="hover:border-primary/40 hover:bg-accent flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors"
+											onclick={() => addAtCenter(kind)}
+										>
+											<span class={cn('flex size-7 shrink-0 items-center justify-center rounded-md', categoryAccent.trigger)}><Icon class="size-4" /></span>
 											{spec.label}
 										</button>
 									{/if}

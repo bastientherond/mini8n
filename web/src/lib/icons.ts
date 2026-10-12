@@ -77,6 +77,16 @@ export const categoryAccent: Record<string, string> = {
 	integration: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-400',
 };
 
+/** Couleur pleine par catégorie (liseré des nœuds). */
+export const categoryBar: Record<string, string> = {
+	source: 'bg-emerald-500',
+	transform: 'bg-sky-500',
+	combine: 'bg-violet-500',
+	trigger: 'bg-amber-500',
+	flow: 'bg-rose-500',
+	integration: 'bg-cyan-500',
+};
+
 export const triggerKindLabels: Record<string, string> = {
 	manual: 'Manuel',
 	schedule: 'Planification',

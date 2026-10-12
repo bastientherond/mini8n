@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Logo from '../Logo.svelte';
 	import Building2 from '@lucide/svelte/icons/building-2';
 	import Check from '@lucide/svelte/icons/check';
 	import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
@@ -9,7 +10,6 @@
 	import Search from '@lucide/svelte/icons/search';
 	import Settings from '@lucide/svelte/icons/settings';
 	import Users from '@lucide/svelte/icons/users';
-	import WorkflowIcon from '@lucide/svelte/icons/workflow';
 	import { Button } from '$lib/components/ui/button';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import { href, router } from '$lib/router.svelte';
@@ -28,13 +28,13 @@
 	const workflowLabel = $derived(currentWorkflow ? wf.name || currentWorkflow.name : null);
 </script>
 
-<header class="bg-background flex h-12 shrink-0 items-center gap-1 border-b px-3">
+<header class="bg-sidebar/80 supports-[backdrop-filter]:bg-sidebar/70 flex h-12 backdrop-blur shrink-0 items-center gap-1 border-b px-3">
 	<a
 		href={ws ? href({ name: 'home', ws: ws.id }) : '#/'}
-		class="bg-primary text-primary-foreground mr-1 flex size-7 shrink-0 items-center justify-center rounded-lg"
+		class="mr-1 shrink-0 rounded-lg transition-transform hover:scale-105"
 		aria-label="Accueil mini8n"
 	>
-		<WorkflowIcon class="size-4" />
+		<Logo class="size-7" />
 	</a>
 
 	<span class="text-muted-foreground/60 px-1 text-lg font-light select-none">/</span>
