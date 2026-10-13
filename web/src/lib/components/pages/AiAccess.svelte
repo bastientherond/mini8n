@@ -22,7 +22,7 @@
 		lecture: { label: 'Lecture seule', help: 'Consulte les workflows, les données et l’historique ; n’exécute et ne modifie rien.' },
 		test: {
 			label: 'Test (recommandé)',
-			help: 'Exécute en simulation (e-mails, messages, écritures en base, fichiers et appels HTTP autres que GET neutralisés ; bases lues en lecture seule) et ne modifie que les workflows inactifs.',
+			help: 'Exécute en simulation : e-mails, messages, écritures en base, fichiers, sous-workflows et appels HTTP qui modifient ou transmettent des données sont neutralisés ; une seule lecture SELECT par requête, en lecture seule. Ne modifie que les workflows inactifs et non appelés par d’autres.',
 		},
 		complet: { label: 'Complet', help: 'Exécutions réelles — les envois partent vraiment — et modification de tous les workflows, actifs compris.' },
 	};
