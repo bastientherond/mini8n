@@ -1,0 +1,52 @@
+name: Release
+
+# Images Docker publiées sur GitHub Container Registry :
+#   - tag vX.Y.Z  → ghcr.io/<dépôt>/<service>:X.Y.Z (version à déployer)
+#   - branche main → ghcr.io/<dépôt>/<service>:main (préproduction)
+# Chaque image est analysée (vulnérabilités connues) avant publication.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  images:
+    name: Images (build, analyse, publication)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      MINI8N_REGISTRY: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v=main; fi
+          # Nom de registre en minuscules (exigence des registres OCI).
+          echo "MINI8N_REGISTRY=$(echo "$MINI8N_REGISTRY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+          echo "MINI8N_VERSION=$v" >> "$GITHUB_ENV"
+      - run: ./scripts/init-secrets.sh
+      - run: docker compose build server web connectors
+      - name: Analyse des vulnérabilités (critiques et élevées corrigeables)
+        run: |
+          for s in server web connectors; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.75.0 image \
+              --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 --no-progress --skip-version-check \
+              "$MINI8N_REGISTRY/$s:$MINI8N_VERSION"
+          done
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: docker compose push server web connectors

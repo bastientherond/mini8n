@@ -8,6 +8,9 @@
 #   backup  (pg_dump périodique vers le volume db-backups ; voir scripts/backup.sh, restore.sh)
 #
 # Démarrage : ./scripts/init-secrets.sh && docker compose up -d --build
+# Production (images publiées par la CI, voir docs/TECHNIQUE.md « Mises à jour ») :
+#   MINI8N_REGISTRY=ghcr.io/<compte>/mini8n MINI8N_VERSION=1.2.0 dans .env, puis
+#   docker compose pull && docker compose up -d --no-build
 name: mini8n
 
 x-hardening: &hardening
@@ -24,7 +27,7 @@ services:
     build:
       context: .
       dockerfile: crates/engine/Dockerfile
-    image: mini8n/engine:local
+    image: ${MINI8N_REGISTRY:-mini8n}/engine:${MINI8N_VERSION:-local}
     # Image d'artefact (wasm) : construite mais jamais exécutée.
     scale: 0
 
@@ -82,7 +85,7 @@ services:
     build:
       context: .
       dockerfile: crates/server/Dockerfile
-    image: mini8n/server:local
+    image: ${MINI8N_REGISTRY:-mini8n}/server:${MINI8N_VERSION:-local}
     environment:
       DATABASE_HOST: db
       DATABASE_USER: mini8n
@@ -132,7 +135,7 @@ services:
     <<: *hardening
     build:
       context: ./connectors
-    image: mini8n/connectors:local
+    image: ${MINI8N_REGISTRY:-mini8n}/connectors:${MINI8N_VERSION:-local}
     environment:
       CONNECTORS_TOKEN_FILE: /run/secrets/connectors_token
     secrets: [connectors_token]
@@ -149,7 +152,7 @@ services:
       context: ./web
       additional_contexts:
         engine: service:engine
-    image: mini8n/web:local
+    image: ${MINI8N_REGISTRY:-mini8n}/web:${MINI8N_VERSION:-local}
     environment:
       CSP_CONNECT_SRC: ${CSP_CONNECT_SRC:-https:}
     ports:

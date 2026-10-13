@@ -83,6 +83,33 @@ apparaît dans `docker compose logs backup`.
 - **Tester** : restaurez une sauvegarde de temps en temps (par exemple sur une machine de
   test) — une sauvegarde jamais restaurée n'est qu'une hypothèse.
 
+## Mises à jour et retour arrière
+
+En production, on déploie **les images construites par la CI**, jamais une copie de travail
+(modifications non enregistrées, dépendances locales…). Le workflow `Release` publie sur
+GitHub Container Registry, après analyse des vulnérabilités (Trivy : aucune faille critique ou
+élevée corrigeable) :
+
+- tag `vX.Y.Z` → images `ghcr.io/<compte>/mini8n/{server,web,connectors}:X.Y.Z` ;
+- branche `main` → tag `main` (préproduction).
+
+```bash
+# .env : MINI8N_REGISTRY=ghcr.io/<compte>/mini8n   MINI8N_VERSION=1.2.0
+./scripts/backup.sh                       # toujours une sauvegarde avant une mise à jour
+docker compose pull
+docker compose up -d --no-build
+```
+
+**Retour arrière** : remettre la version précédente dans `MINI8N_VERSION`, puis `pull` et
+`up -d --no-build`. Les migrations de schéma ne sont appliquées que vers l'avant : si la
+nouvelle version a modifié le schéma, restaurer aussi la sauvegarde faite juste avant
+(`./scripts/restore.sh`). Publier une version : `git tag v1.2.0 && git push origin v1.2.0`.
+
+**Dépendances** : le workflow `Audit des dépendances` vérifie, à chaque modification et chaque
+semaine, les vulnérabilités connues (RustSec via `cargo deny`, `npm audit`), les licences et
+la provenance des crates (`deny.toml` : toute exception y est justifiée). Dependabot propose
+chaque semaine les mises à jour (crates, npm, images Docker, actions GitHub).
+
 ## Développement local
 
 Prérequis : Rust (rustup) avec la cible `wasm32-unknown-unknown`, le CLI `wasm-bindgen`

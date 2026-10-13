@@ -1,5 +1,6 @@
 [package]
 name = "mini8n-engine"
+publish = false
 description = "Moteur d'exécution de workflows mini8n (Rust + WebAssembly, données Parquet)"
 version.workspace = true
 edition.workspace = true

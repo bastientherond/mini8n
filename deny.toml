@@ -1,0 +1,48 @@
+# Contrôle des dépendances Rust (cargo deny check) : exécuté par la CI.
+
+[graph]
+# Cibles réellement compilées : serveur (Linux) et moteur (WebAssembly).
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "wasm32-unknown-unknown"]
+all-features = false
+
+[advisories]
+# Vulnérabilités connues (RustSec) : bloquantes. Une exception doit être justifiée ici.
+version = 2
+yanked = "deny"
+ignore = [
+    # rsa (Marvin Attack) : utilisé uniquement par sqlx-mysql pour CHIFFRER le mot de passe
+    # avec la clé PUBLIQUE du serveur MySQL (auth.rs, OAEP). L'attaque vise les opérations
+    # avec clé privée (déchiffrement, signature), que mini8n n'effectue jamais. Aucun
+    # correctif publié : à retirer dès qu'une version corrigée existe.
+    { id = "RUSTSEC-2023-0071", reason = "chiffrement par clé publique seulement (sqlx-mysql), non exploitable" },
+]
+
+[licenses]
+version = 2
+# Licences permissives, compatibles avec une distribution du code (MIT OR Apache-2.0).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "0BSD",
+    "CC0-1.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+# Les crates du dépôt se référencent par chemin (pas de version) : autorisé pour elles seules.
+allow-wildcard-paths = true
+
+[sources]
+# Uniquement crates.io : pas de dépendance Git ni de registre tiers.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
