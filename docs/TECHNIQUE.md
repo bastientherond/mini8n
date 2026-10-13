@@ -124,6 +124,27 @@ rule_files: [alerts.yml]
 Côté métier, le déclencheur « Sur erreur » permet aussi d'être prévenu (e-mail, Slack…) de
 l'échec d'un workflow précis.
 
+## Capacité (test de charge)
+
+`scripts/load-test.sh` (ApacheBench) prépare un workspace temporaire, mesure l'API et une
+rafale de webhooks, vérifie qu'aucune exécution acceptée n'est perdue, puis nettoie. À lancer
+contre un serveur de test (compte existant : `EMAIL=… PASSWORD=… ./scripts/load-test.sh URL`).
+
+Mesures de référence (serveur compilé en release, `RUNNER_THREADS=4`, pool de 10 connexions,
+PostgreSQL local, poste Apple Silicon ; API appelée directement, sans nginx) :
+
+| Scénario | Résultat |
+| --- | --- |
+| `GET /api/health` (50 en parallèle) | ≈ 8 000 req/s, p99 16 ms |
+| `GET /api/workspaces` authentifié (session + base) | ≈ 4 100 req/s, p99 15 ms |
+| 280 webhooks en rafale, workflow de 5 nœuds sur 20 000 lignes | toutes terminées en 2,6 s (≈ 110 exécutions/s), médiane 27 ms, aucune perte |
+
+Lecture : depuis une même IP, la limitation de débit (300 requêtes publiques en rafale, puis
+300/min ; 120 par jeton de webhook) intervient bien avant la saturation de la file (200 en
+attente, au-delà : 429). Les leviers : `RUNNER_THREADS` (calcul des workflows, un cœur par
+thread), `DATABASE_MAX_CONNECTIONS` (requêtes simultanées), `EXECUTION_TIMEOUT_SECS`. Les
+workflows qui appellent des services externes sont limités par ces services, pas par mini8n.
+
 ## Mises à jour et retour arrière
 
 En production, on déploie **les images construites par la CI**, jamais une copie de travail
