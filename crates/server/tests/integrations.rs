@@ -481,7 +481,8 @@ async fn private_databases_are_blocked_by_default() {
         )
         .await
         .unwrap_err();
-    assert!(err.contains("non autorisée"), "{err}");
+    // Refusée, avec le moyen de l'autoriser (le message varie selon l'hôte : localhost…).
+    assert!(err.contains("NETWORK_ALLOWLIST"), "{err}");
     let t = env
         .api("POST", &format!("/credentials/{cred}/test"), None)
         .await;
