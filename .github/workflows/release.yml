@@ -1,0 +1,57 @@
+name: Release
+
+# Images Docker publiées sur GitHub Container Registry :
+#   - tag vX.Y.Z  → ghcr.io/<dépôt>/<service>:X.Y.Z (version à déployer)
+#   - branche main → ghcr.io/<dépôt>/<service>:main (préproduction)
+# Chaque image est analysée (vulnérabilités connues) avant publication.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  images:
+    name: Images (build, analyse, publication)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      MINI8N_REGISTRY: ghcr.io/${{ github.repository }}
+    # Job avec droit d'écriture sur le registre : actions et image d'analyse épinglées par
+    # empreinte (un tag peut être déplacé ; Dependabot propose les mises à jour).
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v=main; fi
+          # Nom de registre en minuscules (exigence des registres OCI).
+          echo "MINI8N_REGISTRY=$(echo "$MINI8N_REGISTRY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+          echo "MINI8N_VERSION=$v" >> "$GITHUB_ENV"
+      - run: ./scripts/init-secrets.sh
+      - run: docker compose build server web connectors
+      - name: Analyse des vulnérabilités (critiques et élevées corrigeables)
+        run: |
+          for s in server web connectors; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa image \
+              --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 --no-progress --skip-version-check \
+              "$MINI8N_REGISTRY/$s:$MINI8N_VERSION"
+          done
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: docker compose push server web connectors

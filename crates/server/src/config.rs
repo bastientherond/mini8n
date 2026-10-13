@@ -13,11 +13,27 @@ pub enum CookieSecure {
     Never,
 }
 
+/// Serveur SMTP de la plateforme (réinitialisation de mot de passe, vérification d'adresse,
+/// invitations). Distinct des identifiants SMTP des workflows.
+#[derive(Debug, Clone)]
+pub struct MailConfig {
+    pub host: String,
+    pub port: u16,
+    /// starttls | tls | aucune
+    pub security: String,
+    pub user: Option<String>,
+    pub password: Option<String>,
+    /// Expéditeur, ex. `mini8n <noreply@exemple.com>`.
+    pub from: String,
+}
+
 /// Configuration lue depuis l'environnement.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: SocketAddr,
     pub database_url: String,
+    /// Taille maximale du pool de connexions PostgreSQL.
+    pub database_max_connections: u32,
     /// Origine publique du site (ex. `https://mini8n.exemple.com`). Les requêtes
     /// modifiant des données doivent porter cet en-tête `Origin` (anti-CSRF).
     pub public_origins: Vec<String>,
@@ -26,8 +42,12 @@ pub struct Config {
     /// Faire confiance à `X-Real-IP` (uniquement derrière le reverse proxy nginx).
     pub trust_proxy: bool,
     pub session_ttl_hours: i64,
-    /// Désactiver les inscriptions publiques (après création des comptes).
+    /// Inscriptions publiques. Fermées par défaut : on rejoint un workspace par invitation
+    /// (le tout premier compte, administrateur, peut toujours être créé).
     pub allow_registration: bool,
+    /// SMTP de la plateforme ; sans lui, pas de réinitialisation de mot de passe par e-mail
+    /// et les liens d'invitation sont à transmettre à la main.
+    pub mail: Option<MailConfig>,
     /// Autoriser les nœuds HTTP exécutés côté serveur à joindre des adresses privées (déconseillé).
     pub http_allow_private: bool,
     /// Nombre de threads d'exécution des workflows.
@@ -46,6 +66,8 @@ pub struct Config {
     /// Service « connectors » (Oracle) : URL interne et jeton partagé.
     pub connectors_url: Option<String>,
     pub connectors_token: Option<String>,
+    /// Jeton d'accès à `/api/metrics` (Prometheus) ; sans lui, l'URL n'existe pas.
+    pub metrics_token: Option<String>,
 }
 
 fn env(key: &str) -> Option<String> {
@@ -96,6 +118,10 @@ impl Config {
                 .parse()
                 .map_err(|e| format!("BIND_ADDR invalide : {e}"))?,
             database_url,
+            database_max_connections: env("DATABASE_MAX_CONNECTIONS")
+                .and_then(|v| v.parse().ok())
+                .filter(|n| (2..=200).contains(n))
+                .unwrap_or(10),
             public_origins,
             cookie_secure: match env("COOKIE_SECURE")
                 .map(|v| v.to_ascii_lowercase())
@@ -114,7 +140,8 @@ impl Config {
             session_ttl_hours: env("SESSION_TTL_HOURS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(24 * 7),
-            allow_registration: env_bool("ALLOW_REGISTRATION", true),
+            allow_registration: env_bool("ALLOW_REGISTRATION", false),
+            mail: mail_config()?,
             http_allow_private: env_bool("HTTP_ALLOW_PRIVATE", false),
             runner_threads: env("RUNNER_THREADS")
                 .and_then(|v| v.parse().ok())
@@ -141,8 +168,44 @@ impl Config {
             )?,
             connectors_url: env("CONNECTORS_URL").map(|u| u.trim_end_matches('/').to_string()),
             connectors_token: secret("CONNECTORS_TOKEN")?,
+            metrics_token: match secret("METRICS_TOKEN")? {
+                Some(t) if t.len() < 32 => {
+                    return Err("METRICS_TOKEN : 32 caractères minimum".into());
+                }
+                t => t,
+            },
         })
     }
+}
+
+fn mail_config() -> Result<Option<MailConfig>, String> {
+    let Some(host) = env("SMTP_HOST") else {
+        return Ok(None);
+    };
+    let security = env("SMTP_SECURITY")
+        .unwrap_or_else(|| "starttls".into())
+        .to_lowercase();
+    if !matches!(security.as_str(), "starttls" | "tls" | "aucune") {
+        return Err(format!(
+            "SMTP_SECURITY invalide : {security} (starttls, tls ou aucune)"
+        ));
+    }
+    let port = match env("SMTP_PORT") {
+        Some(p) => p.parse().map_err(|_| format!("SMTP_PORT invalide : {p}"))?,
+        None if security == "tls" => 465,
+        None => 587,
+    };
+    let from = env("SMTP_FROM").ok_or("SMTP_FROM requis avec SMTP_HOST")?;
+    from.parse::<lettre::message::Mailbox>()
+        .map_err(|_| format!("SMTP_FROM invalide : {from}"))?;
+    Ok(Some(MailConfig {
+        host,
+        port,
+        security,
+        user: env("SMTP_USER"),
+        password: secret("SMTP_PASSWORD")?,
+        from,
+    }))
 }
 
 fn percent_encode(s: &str) -> String {

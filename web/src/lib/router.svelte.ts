@@ -12,7 +12,10 @@ export type Route =
 	| { name: 'executions'; ws: string }
 	| { name: 'credentials'; ws: string }
 	| { name: 'files'; ws: string }
-	| { name: 'form'; token: string };
+	| { name: 'form'; token: string }
+	| { name: 'reset'; token: string }
+	| { name: 'verify'; token: string }
+	| { name: 'invitation'; token: string };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOKEN = /^[A-Za-z0-9_-]{32,128}$/;
@@ -21,6 +24,10 @@ export function parse(hash: string): Route {
 	const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
 	if (parts[0] === 'account' && parts.length === 1) return { name: 'account' };
 	if (parts[0] === 'f' && TOKEN.test(parts[1] ?? '')) return { name: 'form', token: parts[1] };
+	// Liens reçus par e-mail.
+	if (parts[0] === 'reinitialiser' && TOKEN.test(parts[1] ?? '')) return { name: 'reset', token: parts[1] };
+	if (parts[0] === 'verifier' && TOKEN.test(parts[1] ?? '')) return { name: 'verify', token: parts[1] };
+	if (parts[0] === 'invitation' && TOKEN.test(parts[1] ?? '')) return { name: 'invitation', token: parts[1] };
 	if (parts[0] !== 'w' || !UUID.test(parts[1] ?? '')) return { name: 'root' };
 	const ws = parts[1].toLowerCase();
 	switch (parts[2]) {
@@ -68,6 +75,12 @@ export function format(route: Route): string {
 			return `/w/${route.ws}/files`;
 		case 'form':
 			return `/f/${route.token}`;
+		case 'reset':
+			return `/reinitialiser/${route.token}`;
+		case 'verify':
+			return `/verifier/${route.token}`;
+		case 'invitation':
+			return `/invitation/${route.token}`;
 	}
 }
 

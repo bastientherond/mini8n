@@ -6,7 +6,10 @@
 	import { TooltipProvider } from '$lib/components/ui/tooltip';
 	import AuthScreen from '$lib/components/AuthScreen.svelte';
 	import Onboarding from '$lib/components/Onboarding.svelte';
+	import InvitationPage from '$lib/components/pages/InvitationPage.svelte';
 	import PublicFormPage from '$lib/components/pages/PublicFormPage.svelte';
+	import ResetPasswordPage from '$lib/components/pages/ResetPasswordPage.svelte';
+	import VerifyEmailPage from '$lib/components/pages/VerifyEmailPage.svelte';
 	import AppShell from '$lib/components/shell/AppShell.svelte';
 	import { resources } from '$lib/resources.svelte';
 	import { router } from '$lib/router.svelte';
@@ -38,6 +41,9 @@
 	{#if router.route.name === 'form'}
 		<!-- Formulaire public : accessible sans compte. -->
 		<PublicFormPage token={router.route.token} />
+	{:else if router.route.name === 'reset'}
+		<!-- Lien « mot de passe oublié » : accessible sans session. -->
+		<ResetPasswordPage token={router.route.token} />
 	{:else}
 	{#await ready}
 		{@render centered('Chargement…')}
@@ -51,6 +57,11 @@
 				<p>Le serveur mini8n est injoignable.</p>
 				<Button variant="outline" size="sm" onclick={() => (ready = session.init())}>Réessayer</Button>
 			</div>
+		{:else if router.route.name === 'verify' && session.status === 'ready'}
+			<!-- Lien de vérification : à ouvrir depuis le compte concerné (connexion d'abord). -->
+			<VerifyEmailPage token={router.route.token} />
+		{:else if router.route.name === 'invitation' && session.status !== 'loading'}
+			<InvitationPage token={router.route.token} />
 		{:else if session.status === 'anonymous'}
 			<AuthScreen />
 		{:else if session.status === 'ready' && session.workspaces.length === 0}

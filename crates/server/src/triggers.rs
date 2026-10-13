@@ -360,6 +360,7 @@ pub async fn run_now(
             trigger: None,
             target: None,
             progress: None,
+            read_only: false,
         })
         .await?;
     Ok(Json(match tokio::time::timeout(RUN_WAIT, done).await {
@@ -531,6 +532,7 @@ pub async fn webhook(
             }),
             target: None,
             progress: None,
+            read_only: false,
         })
         .await?;
     if !wait {
@@ -679,6 +681,7 @@ pub async fn submit_form(
             }),
             target: None,
             progress: None,
+            read_only: false,
         })
         .await?;
     let message = param_str(&t.config, "confirmation");

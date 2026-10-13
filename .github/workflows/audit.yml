@@ -1,0 +1,40 @@
+name: Audit des dépendances
+
+# Vulnérabilités connues, licences et provenance des dépendances. Exécuté aussi chaque
+# semaine : de nouvelles failles sont publiées sans que le code change.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+
+  npm:
+    name: npm (interface, connecteurs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # Interface : dépendances de build incluses (elles produisent le code servi).
+      - working-directory: web
+        run: npm audit --audit-level=high
+      # Connecteurs : seules les dépendances d'exécution sont dans l'image.
+      - working-directory: connectors
+        run: npm audit --omit=dev --audit-level=high

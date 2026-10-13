@@ -14,7 +14,7 @@ use uuid::Uuid;
 use super::{KeptRun, edit};
 use crate::AppState;
 use crate::runner::{Progress, Start, definition_to_engine};
-use crate::tokens::TokenAuth;
+use crate::tokens::{Scope, TokenAuth};
 use crate::workflows;
 
 /// Attente maximale d'une exécution dans un appel d'outil (au-delà : `get_run_result`).
@@ -34,6 +34,81 @@ Corrigez avec update_node / add_node / connect_nodes / disconnect_nodes / delete
 sont enregistrées et apparaissent en direct dans l'éditeur des membres connectés. list_node_types décrit \
 chaque type de nœud et ses paramètres. Expressions : syntaxe JavaScript dans {{ … }} ($json.colonne, $now…). \
 Les exécutions automatiques en échec se consultent avec list_executions / get_execution.";
+
+/// Outils permis à un jeton « lecture » (aucune exécution, aucune modification).
+const READ_TOOLS: [&str; 8] = [
+    "list_workflows",
+    "get_workflow",
+    "list_node_types",
+    "list_credentials",
+    "get_run_result",
+    "get_node_output",
+    "list_executions",
+    "get_execution",
+];
+
+/// Ce que permet la portée du jeton (rappelé à l'IA à l'initialisation).
+pub fn scope_note(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Read => {
+            "Jeton « lecture » : consultation seulement (aucune exécution ni modification)."
+        }
+        Scope::Test => {
+            "Jeton « test » : exécutions en SIMULATION (e-mails, messages, écritures en base, fichiers, \
+appels HTTP autres que GET et sous-workflows neutralisés ; lectures de bases en lecture seule) ; \
+seuls les workflows inactifs peuvent être modifiés."
+        }
+        Scope::Full => {
+            "Jeton « complet » : exécutions réelles (les envois partent vraiment) et modification de tous les workflows."
+        }
+    }
+}
+
+/// Simulation : neutralise (désactive) les nœuds qui agissent hors de mini8n ou peuvent
+/// y envoyer des données. Un nœud
+/// désactivé transmet son entrée telle quelle : la suite du workflow s'exécute.
+fn simulate(def: &mut Value) -> Vec<String> {
+    const SENDS: [&str; 7] = [
+        "email_send",
+        "chat_message",
+        "postgres_write",
+        "mysql_write",
+        "oracle_write",
+        "file_write",
+        "subworkflow",
+    ];
+    let mut neutralised = Vec::new();
+    for n in def["nodes"].as_array_mut().into_iter().flatten() {
+        let text = |path: &str| {
+            n.pointer(path)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let (kind, method, name) = (
+            text("/data/kind"),
+            text("/data/params/method"),
+            text("/data/name"),
+        );
+        // Appel HTTP : neutralisé s'il modifie quelque chose (méthode autre que GET) ou s'il
+        // peut transmettre des données lues (expressions dans l'URL, les en-têtes ou le corps).
+        let templated = ["url", "headers", "body"]
+            .iter()
+            .any(|k| text(&format!("/data/params/{k}")).contains("{{"));
+        let sends = SENDS.contains(&kind.as_str())
+            || (kind == "http"
+                && (templated || (!method.is_empty() && !method.eq_ignore_ascii_case("GET"))));
+        let disabled = n
+            .pointer("/data/disabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if sends && !disabled {
+            n["data"]["disabled"] = json!(true);
+            neutralised.push(if name.is_empty() { kind } else { name });
+        }
+    }
+    neutralised
+}
 
 pub enum Outcome {
     Done(Value),
@@ -57,7 +132,24 @@ fn tool(
     })
 }
 
-pub fn list() -> Vec<Value> {
+/// Outils permis par la portée du jeton.
+pub fn list(scope: Scope) -> Vec<Value> {
+    let mut tools = all_tools();
+    if scope == Scope::Read {
+        tools.retain(|t| t["name"].as_str().is_some_and(|n| READ_TOOLS.contains(&n)));
+    }
+    if scope == Scope::Test
+        && let Some(run) = tools.iter_mut().find(|t| t["name"] == "run_workflow")
+    {
+        run["description"] = json!(format!(
+            "SIMULATION (jeton « test ») : les nœuds d'envoi sont neutralisés. {}",
+            run["description"].as_str().unwrap_or_default()
+        ));
+    }
+    tools
+}
+
+fn all_tools() -> Vec<Value> {
     let wf = json!({ "type": "string", "description": "Identifiant du workflow (list_workflows)" });
     let node = |d: &str| json!({ "type": "string", "description": d });
     vec![
@@ -260,6 +352,14 @@ pub async fn call(
     name: &str,
     args: &Value,
 ) -> Result<Outcome, String> {
+    if auth.scope == Scope::Read
+        && !READ_TOOLS.contains(&name)
+        && all_tools().iter().any(|t| t["name"] == name)
+    {
+        return Err(format!(
+            "Jeton en lecture seule : « {name} » n'est pas permis."
+        ));
+    }
     let value = match name {
         "list_workflows" => list_workflows(state, auth).await?,
         "create_workflow" => create_workflow(state, auth, args).await?,
@@ -507,7 +607,14 @@ fn planned(def: &Value, target: Option<&str>) -> Vec<String> {
 
 async fn run_workflow(state: &AppState, auth: &TokenAuth, args: &Value) -> Result<Value, String> {
     let id = uuid(args, "workflow_id")?;
-    let wf = load(state, auth, id).await?;
+    let mut wf = load(state, auth, id).await?;
+    // Jeton « test » : simulation (envois neutralisés, bases en lecture seule).
+    let simulated = auth.scope != Scope::Full;
+    let neutralised = if simulated {
+        simulate(&mut wf.definition)
+    } else {
+        vec![]
+    };
     let engine = definition_to_engine(&wf.definition)?;
     let target = opt(args, "node_id");
     if let Some(t) = target {
@@ -594,6 +701,7 @@ async fn run_workflow(state: &AppState, auth: &TokenAuth, args: &Value) -> Resul
             trigger,
             target: target.map(String::from),
             progress,
+            read_only: simulated,
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -635,7 +743,14 @@ async fn run_workflow(state: &AppState, auth: &TokenAuth, args: &Value) -> Resul
             });
         });
     }
-    wait_result(state, auth, execution_id, sample).await
+    let mut result = wait_result(state, auth, execution_id, sample).await?;
+    if simulated {
+        result["simulation"] = json!({
+            "neutralised": neutralised,
+            "note": "Simulation : ces nœuds ont transmis leur entrée sans rien envoyer ; les bases ont été lues en lecture seule.",
+        });
+    }
+    Ok(result)
 }
 
 async fn wait_result(
@@ -770,6 +885,15 @@ fn node_output(state: &AppState, auth: &TokenAuth, args: &Value) -> Result<Value
 // Modifications
 // ---------------------------------------------------------------------------
 
+/// Le workflow peut-il être exécuté par un autre (déclencheur « Appelé par un workflow ») ?
+fn callable(def: &Value) -> bool {
+    def["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|n| n.pointer("/data/kind").and_then(Value::as_str) == Some(triggers::WORKFLOW))
+}
+
 /// Applique `change` à la définition et l'enregistre (nouvelle version diffusée en direct).
 /// En cas d'enregistrement simultané par un membre, la modification est réappliquée.
 async fn save<F>(
@@ -790,24 +914,47 @@ where
     let id = uuid(args, "workflow_id")?;
     for _ in 0..3 {
         let wf = load(state, auth, id).await?;
+        let full = auth.scope == Scope::Full;
+        // Un workflow actif tourne tout seul (planification, webhooks…) ; un workflow appelable
+        // (« Appelé par un workflow ») s'exécute pour de vrai depuis un workflow actif. Seul un
+        // jeton « complet » peut changer ce qui s'exécutera réellement.
+        if !full && wf.active {
+            return Err(format!(
+                "« {} » est actif : désactivez-le pour le modifier, ou utilisez un jeton « complet ».",
+                wf.name
+            ));
+        }
         let mut def = wf.definition.clone();
         let result = change(&mut def)?;
+        if !full && (callable(&wf.definition) || callable(&def)) {
+            return Err(format!(
+                "« {} » peut être appelé par d'autres workflows (déclencheur « Appelé par un workflow ») : \
+                 seul un jeton « complet » peut le modifier.",
+                wf.name
+            ));
+        }
         workflows::check_definition(&def).map_err(|e| e.to_string())?;
         let mut tx = state.db.begin().await.map_err(db_err)?;
-        let saved: Option<i32> = sqlx::query_scalar(
+        // Vérification de l'état actif dans la même écriture : une activation simultanée
+        // ne peut pas s'intercaler entre la lecture et l'enregistrement.
+        let saved: Option<(i32, bool)> = sqlx::query_as(
             "UPDATE workflows SET definition = $3, version = version + 1, updated_by = $4, updated_at = now()
-             WHERE id = $1 AND workspace_id = $2 AND version = $5 RETURNING version",
+             WHERE id = $1 AND workspace_id = $2 AND version = $5 AND ($6 OR NOT active)
+             RETURNING version, active",
         )
         .bind(id)
         .bind(auth.workspace_id)
         .bind(SqlJson(&def))
         .bind(auth.user_id)
         .bind(wf.version)
+        .bind(full)
         .fetch_optional(&mut *tx)
         .await
         .map_err(db_err)?;
-        let Some(version) = saved else { continue };
-        let deactivated = if wf.active {
+        let Some((version, active)) = saved else {
+            continue;
+        };
+        let deactivated = if active {
             crate::triggers::resync_after_save(&mut tx, auth.workspace_id, id, &def)
                 .await
                 .map_err(|e| e.to_string())?
@@ -943,7 +1090,7 @@ mod tests {
 
     #[test]
     fn tools_are_described() {
-        let tools = list();
+        let tools = list(Scope::Full);
         let names: HashSet<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert_eq!(names.len(), tools.len(), "noms uniques");
         for t in &tools {
@@ -962,6 +1109,20 @@ mod tests {
             "edges": [{"source": "a", "target": "b"}]
         });
         assert_eq!(planned(&def, Some("b")), ["a", "b"]);
+
+        let mut sim = json!({"nodes": [
+            {"id": "m", "data": {"kind": "email_send", "name": "Envoi", "params": {}}},
+            {"id": "g", "data": {"kind": "http", "name": "Lecture", "params": {"method": "GET", "url": "https://api.exemple.test/x"}}},
+            {"id": "x", "data": {"kind": "http", "name": "Fuite", "params": {"method": "GET", "url": "https://autre.test/?d={{ $json.email }}"}}},
+            {"id": "p", "data": {"kind": "http", "name": "Écriture", "params": {"method": "POST", "url": "https://api.exemple.test/x"}}},
+            {"id": "f", "data": {"kind": "filter", "name": "Filtre", "params": {}}}
+        ]});
+        assert_eq!(simulate(&mut sim), ["Envoi", "Fuite", "Écriture"]);
+        assert_eq!(
+            sim["nodes"][1]["data"].get("disabled"),
+            None,
+            "GET statique conservé"
+        );
         assert_eq!(planned(&def, None).len(), 3);
         assert_eq!(
             shorten(json!("x".repeat(600)))

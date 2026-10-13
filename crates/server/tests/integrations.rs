@@ -43,11 +43,13 @@ async fn setup(allow_private: bool) -> Option<Env> {
     let config = Config {
         bind: "127.0.0.1:0".parse().unwrap(),
         database_url: url,
+        database_max_connections: 10,
         public_origins: vec![ORIGIN.into()],
         cookie_secure: CookieSecure::Always,
         trust_proxy: false,
         session_ttl_hours: 1,
         allow_registration: true,
+        mail: None,
         http_allow_private: allow_private,
         runner_threads: 2,
         execution_timeout_secs: 30,
@@ -57,6 +59,7 @@ async fn setup(allow_private: bool) -> Option<Env> {
         credentials_key: [42u8; 32],
         connectors_url: std::env::var("TEST_CONNECTORS_URL").ok(),
         connectors_token: std::env::var("TEST_CONNECTORS_TOKEN").ok(),
+        metrics_token: None,
     };
     let state = AppState::new(db.clone(), config);
     let app = app(state);
@@ -481,7 +484,8 @@ async fn private_databases_are_blocked_by_default() {
         )
         .await
         .unwrap_err();
-    assert!(err.contains("non autorisée"), "{err}");
+    // Refusée, avec le moyen de l'autoriser (le message varie selon l'hôte : localhost…).
+    assert!(err.contains("NETWORK_ALLOWLIST"), "{err}");
     let t = env
         .api("POST", &format!("/credentials/{cred}/test"), None)
         .await;

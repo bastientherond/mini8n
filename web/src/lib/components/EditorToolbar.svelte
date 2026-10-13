@@ -2,20 +2,24 @@
 	import CircleAlert from '@lucide/svelte/icons/circle-alert';
 	import Cloud from '@lucide/svelte/icons/cloud';
 	import Copy from '@lucide/svelte/icons/copy';
+	import Check from '@lucide/svelte/icons/check';
 	import Download from '@lucide/svelte/icons/download';
+	import Eraser from '@lucide/svelte/icons/eraser';
 	import Ellipsis from '@lucide/svelte/icons/ellipsis';
 	import History from '@lucide/svelte/icons/history';
 	import Server from '@lucide/svelte/icons/server';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Play from '@lucide/svelte/icons/play';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import { Input } from '$lib/components/ui/input';
 	import { Switch } from '$lib/components/ui/switch';
 	import { toast } from 'svelte-sonner';
-	import { errorMessage } from '$lib/api';
+	import { api, errorMessage } from '$lib/api';
+	import { session } from '$lib/session.svelte';
 	import { peerColor } from '$lib/live.svelte';
 	import { router } from '$lib/router.svelte';
 	import { attempt, duplicateWorkflow, exportWorkflow, ui } from '$lib/ui.svelte';
@@ -37,6 +41,31 @@
 			toast.error(errorMessage(e));
 		} finally {
 			serverRunning = false;
+		}
+	}
+
+	async function toggleKeepData() {
+		if (!wf.workspaceId || !wf.workflowId) return;
+		const next = !wf.keepData;
+		try {
+			const doc = await api.setKeepData(wf.workspaceId, wf.workflowId, next);
+			wf.keepData = doc.keepData ?? next;
+			toast.success(next ? 'Les données des exécutions seront conservées' : 'Données des exécutions effacées et plus conservées');
+		} catch (e) {
+			toast.error(errorMessage(e));
+		}
+	}
+
+	let confirmClear = $state(false);
+
+	async function clearHistory() {
+		confirmClear = false;
+		if (!wf.workspaceId || !wf.workflowId) return;
+		try {
+			const { deleted } = await api.clearExecutions(wf.workspaceId, wf.workflowId);
+			toast.success(`${deleted} exécution${deleted > 1 ? 's' : ''} effacée${deleted > 1 ? 's' : ''}`);
+		} catch (e) {
+			toast.error(errorMessage(e));
 		}
 	}
 
@@ -122,6 +151,12 @@
 					Exécuter sur le serveur
 				</DropdownMenu.Item>
 				<DropdownMenu.Item onclick={openExecutions}><History /> Voir les exécutions</DropdownMenu.Item>
+				<DropdownMenu.Item onclick={toggleKeepData} title="Désactivez pour les workflows qui traitent des données personnelles : l'historique ne garde que statuts, comptes et erreurs.">
+					<Check class={wf.keepData ? '' : 'opacity-0'} /> Conserver les données des exécutions
+				</DropdownMenu.Item>
+				{#if session.current?.role === 'owner'}
+					<DropdownMenu.Item onclick={() => (confirmClear = true)}><Eraser /> Effacer l'historique</DropdownMenu.Item>
+				{/if}
 				<DropdownMenu.Separator />
 				<DropdownMenu.Item onclick={() => wf.workflowId && duplicateWorkflow(wf.workflowId)}><Copy /> Dupliquer</DropdownMenu.Item>
 				<DropdownMenu.Item onclick={() => wf.workflowId && exportWorkflow(wf.workflowId)}><Download /> Exporter (.json)</DropdownMenu.Item>
@@ -140,3 +175,18 @@
 		</Button>
 	</div>
 </div>
+
+<AlertDialog.Root bind:open={confirmClear}>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>Effacer l'historique de « {wf.name} » ?</AlertDialog.Title>
+			<AlertDialog.Description>
+				Toutes les exécutions terminées de ce workflow et leurs données sont supprimées définitivement, pour tous les membres.
+			</AlertDialog.Description>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Annuler</AlertDialog.Cancel>
+			<AlertDialog.Action class="bg-destructive text-white hover:bg-destructive/90" onclick={clearHistory}>Effacer</AlertDialog.Action>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

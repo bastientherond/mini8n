@@ -1,5 +1,6 @@
 //! API HTTP de mini8n.
 
+pub mod accounts;
 pub mod auth;
 pub mod config;
 pub mod credentials;
@@ -9,7 +10,9 @@ pub mod executions;
 pub mod files;
 pub mod integrations;
 pub mod live;
+pub mod mailer;
 pub mod mcp;
+pub mod metrics;
 pub mod net;
 pub mod runner;
 pub mod schedule;
@@ -56,6 +59,8 @@ pub struct Limits {
     pub live: RateLimiter,
     /// Appels MCP des IA : par jeton.
     pub mcp: RateLimiter,
+    /// E-mails de compte (réinitialisation, vérification) : par adresse.
+    pub emails: RateLimiter,
 }
 
 impl Default for Limits {
@@ -69,6 +74,7 @@ impl Default for Limits {
             public_ip: RateLimiter::new(300, 300),
             live: RateLimiter::new(30, 30),
             mcp: RateLimiter::new(120, 120),
+            emails: RateLimiter::new(3, 1),
         }
     }
 }
@@ -88,6 +94,8 @@ pub struct AppState {
     pub live: Arc<live::Hub>,
     /// Serveur MCP : exécutions des IA et leur présence dans l'éditeur.
     pub mcp: Arc<mcp::McpState>,
+    /// E-mails de la plateforme (SMTP_HOST…) ; `None` si non configuré.
+    pub mailer: Option<Arc<mailer::Mailer>>,
 }
 
 impl AppState {
@@ -95,6 +103,16 @@ impl AppState {
     pub fn new(db: PgPool, config: Config) -> Self {
         let config = Arc::new(config);
         let vault = Arc::new(crypto::Vault::new(&config.credentials_key));
+        let mailer = config
+            .mail
+            .as_ref()
+            .and_then(|m| match mailer::Mailer::new(m) {
+                Ok(m) => Some(Arc::new(m)),
+                Err(e) => {
+                    tracing::error!(%e, "SMTP de la plateforme invalide : e-mails désactivés");
+                    None
+                }
+            });
         Self {
             runner: runner::Runner::start_pool(db.clone(), config.clone(), vault.clone()),
             vault,
@@ -104,6 +122,7 @@ impl AppState {
             hash_permits: Arc::new(Semaphore::new(4)),
             live: Arc::new(live::Hub::default()),
             mcp: Arc::new(mcp::McpState::default()),
+            mailer,
         }
     }
 }
@@ -132,6 +151,8 @@ pub fn app(state: AppState) -> Router {
 
     let api = Router::new()
         .route("/health", get(health))
+        // Supervision (Prometheus) : jeton METRICS_TOKEN requis.
+        .route("/metrics", get(metrics::metrics))
         .route("/auth/config", get(auth::public_config))
         .route("/auth/register", post(auth::register))
         .route("/auth/login", post(auth::login))
@@ -139,6 +160,22 @@ pub fn app(state: AppState) -> Router {
         .route("/auth/logout-all", post(auth::logout_all))
         .route("/auth/me", get(auth::me))
         .route("/auth/password", post(auth::change_password))
+        .route("/auth/password/forgot", post(accounts::forgot_password))
+        .route("/auth/password/reset", post(accounts::reset_password))
+        .route(
+            "/auth/email/send-verification",
+            post(accounts::send_verification),
+        )
+        .route("/auth/email/verify", post(accounts::verify_email))
+        .route("/auth/invitations/{token}", get(accounts::show_invitation))
+        .route(
+            "/auth/invitations/{token}/accept",
+            post(accounts::accept_invitation),
+        )
+        .route(
+            "/auth/invitations/{token}/register",
+            post(accounts::register_invited),
+        )
         .route("/workspaces", get(ws::list).post(ws::create))
         .route("/workspaces/{ws}", patch(ws::rename).delete(ws::delete))
         .route(
@@ -158,6 +195,14 @@ pub fn app(state: AppState) -> Router {
             get(wfl::get).put(wfl::update).delete(wfl::delete),
         )
         .route("/workspaces/{ws}/workflows/{id}/live", get(live::connect))
+        .route(
+            "/workspaces/{ws}/workflows/{id}/data",
+            put(wfl::set_keep_data),
+        )
+        .route(
+            "/workspaces/{ws}/workflows/{id}/executions",
+            delete(wfl::clear_executions),
+        )
         .route(
             "/workspaces/{ws}/workflows/{id}/active",
             put(triggers::set_active),
@@ -194,6 +239,14 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/workspaces/{ws}/integrations/run",
             post(integrations::run_endpoint).layer(DefaultBodyLimit::max(40 * 1024 * 1024)),
+        )
+        .route(
+            "/workspaces/{ws}/invitations",
+            get(accounts::list_invitations),
+        )
+        .route(
+            "/workspaces/{ws}/invitations/{id}",
+            delete(accounts::revoke_invitation),
         )
         .route(
             "/workspaces/{ws}/tokens",

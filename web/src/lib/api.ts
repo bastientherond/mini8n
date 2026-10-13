@@ -4,6 +4,46 @@ export interface User {
 	id: string;
 	email: string;
 	name: string;
+	emailVerified?: boolean;
+}
+
+/** Configuration publique (écran de connexion). */
+export interface PublicConfig {
+	allowRegistration: boolean;
+	/** Aucun compte : le premier créé sera l'administrateur. */
+	firstAccount?: boolean;
+	/** Réinitialisation du mot de passe par e-mail disponible. */
+	passwordReset?: boolean;
+}
+
+/** Invitation créée en ajoutant une personne sans compte vérifié. */
+export interface Invitation {
+	id: string;
+	email: string;
+	role: Role;
+	expiresAt: string;
+	/** Envoyée par e-mail ; sinon `link` est à transmettre. */
+	delivered: boolean;
+	link?: string;
+}
+
+export interface PendingInvitation {
+	id: string;
+	email: string;
+	role: Role;
+	invitedBy: string | null;
+	delivered: boolean;
+	expiresAt: string;
+}
+
+/** Invitation vue par la personne invitée. */
+export interface InvitationInfo {
+	workspace: string;
+	email: string;
+	role: Role;
+	invitedBy: string | null;
+	expiresAt: string;
+	accountExists: boolean;
 }
 
 export type Role = 'owner' | 'member';
@@ -20,6 +60,8 @@ export interface Me {
 	user: User;
 	workspaces: WorkspaceSummary[];
 	allowRegistration: boolean;
+	/** Un lien de vérification d'adresse peut être envoyé. */
+	canVerifyEmail?: boolean;
 }
 
 export interface Member {
@@ -40,9 +82,13 @@ export interface WorkflowSummary {
 }
 
 /** Jeton d'accès d'une IA (serveur MCP). */
+/** Portée d'un jeton d'IA. */
+export type TokenScope = 'lecture' | 'test' | 'complet';
+
 export interface ApiToken {
 	id: string;
 	name: string;
+	scope: TokenScope;
 	createdAt: string;
 	lastUsedAt: string | null;
 	expiresAt: string | null;
@@ -53,6 +99,8 @@ export interface WorkflowDoc {
 	name: string;
 	version: number;
 	active: boolean;
+	/** Aperçu des données des exécutions conservé dans l'historique. */
+	keepData?: boolean;
 	definition: unknown;
 	updatedAt: string;
 	/** Motif de désactivation automatique après une sauvegarde. */
@@ -204,7 +252,16 @@ async function request<T>(method: string, path: string, body?: unknown, opts: { 
 const ws = (id: string) => `/workspaces/${encodeURIComponent(id)}`;
 
 export const api = {
-	config: () => request<{ allowRegistration: boolean }>('GET', '/auth/config'),
+	config: () => request<PublicConfig>('GET', '/auth/config'),
+	forgotPassword: (email: string) => request<void>('POST', '/auth/password/forgot', { email }),
+	resetPassword: (token: string, password: string) => request<void>('POST', '/auth/password/reset', { token, password }),
+	sendVerification: () => request<void>('POST', '/auth/email/send-verification'),
+	verifyEmail: (token: string) => request<void>('POST', '/auth/email/verify', { token }),
+	invitation: (token: string) => request<InvitationInfo>('GET', `/auth/invitations/${encodeURIComponent(token)}`),
+	acceptInvitation: (token: string) =>
+		request<{ workspaceId: string }>('POST', `/auth/invitations/${encodeURIComponent(token)}/accept`),
+	registerInvited: (token: string, name: string, password: string) =>
+		request<{ workspaceId: string }>('POST', `/auth/invitations/${encodeURIComponent(token)}/register`, { name, password }),
 	me: () => request<Me>('GET', '/auth/me'),
 	register: (email: string, name: string, password: string) =>
 		request<Me>('POST', '/auth/register', { email, name, password }),
@@ -220,7 +277,9 @@ export const api = {
 
 	members: (id: string) => request<Member[]>('GET', `${ws(id)}/members`),
 	addMember: (id: string, email: string, role: Role) =>
-		request<Member[]>('POST', `${ws(id)}/members`, { email, role }),
+		request<{ members: Member[]; invitation?: Invitation }>('POST', `${ws(id)}/members`, { email, role }),
+	invitations: (id: string) => request<PendingInvitation[]>('GET', `${ws(id)}/invitations`),
+	revokeInvitation: (id: string, iid: string) => request<void>('DELETE', `${ws(id)}/invitations/${encodeURIComponent(iid)}`),
 	setRole: (id: string, userId: string, role: Role) =>
 		request<Member[]>('PATCH', `${ws(id)}/members/${encodeURIComponent(userId)}`, { role }),
 	removeMember: (id: string, userId: string) =>
@@ -237,6 +296,10 @@ export const api = {
 			{ name, definition, version },
 			{ keepalive },
 		),
+	setKeepData: (id: string, wid: string, keepData: boolean) =>
+		request<WorkflowDoc>('PUT', `${ws(id)}/workflows/${encodeURIComponent(wid)}/data`, { keepData }),
+	clearExecutions: (id: string, wid: string) =>
+		request<{ deleted: number }>('DELETE', `${ws(id)}/workflows/${encodeURIComponent(wid)}/executions`),
 	deleteWorkflow: (id: string, wid: string) =>
 		request<void>('DELETE', `${ws(id)}/workflows/${encodeURIComponent(wid)}`),
 
@@ -259,8 +322,8 @@ export const api = {
 	execution: (id: string, eid: string) => request<ExecutionDetail>('GET', `${ws(id)}/executions/${encodeURIComponent(eid)}`),
 
 	tokens: (id: string) => request<ApiToken[]>('GET', `${ws(id)}/tokens`),
-	createToken: (id: string, name: string, expiresInDays: number | null) =>
-		request<ApiToken & { token: string }>('POST', `${ws(id)}/tokens`, { name, expiresInDays }),
+	createToken: (id: string, name: string, expiresInDays: number | null, scope: TokenScope) =>
+		request<ApiToken & { token: string }>('POST', `${ws(id)}/tokens`, { name, expiresInDays, scope }),
 	deleteToken: (id: string, tid: string) => request<void>('DELETE', `${ws(id)}/tokens/${encodeURIComponent(tid)}`),
 
 	credentialTypes: () => request<CredentialKind[]>('GET', '/credential-types'),

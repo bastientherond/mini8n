@@ -64,7 +64,7 @@ async fn main() {
     let mut attempt = 0;
     let db = loop {
         match PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(config.database_max_connections)
             .acquire_timeout(Duration::from_secs(5))
             .connect(&config.database_url)
             .await
@@ -86,10 +86,32 @@ async fn main() {
         std::process::exit(1);
     }
 
-    match runner::recover_interrupted(&db).await {
-        Ok(n) if n > 0 => tracing::warn!(n, "exécutions interrompues marquées en erreur"),
-        Ok(_) => {}
-        Err(e) => tracing::error!(%e, "reprise des exécutions"),
+    // Exécutions orphelines (serveur arrêté ou planté pendant l'exécution) : au démarrage,
+    // puis régulièrement (une autre instance a pu tomber).
+    {
+        let (db, timeout) = (db.clone(), config.execution_timeout_secs);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                tick.tick().await;
+                match runner::recover_interrupted(&db, timeout).await {
+                    Ok(n) if n > 0 => {
+                        tracing::warn!(n, "exécutions interrompues marquées en erreur")
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(%e, "reprise des exécutions"),
+                }
+            }
+        });
+    }
+    // Installation neuve : le premier compte créé devient administrateur.
+    if let Ok(false) = sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users)")
+        .fetch_one(&db)
+        .await
+    {
+        tracing::warn!(
+            "aucun compte : le premier compte créé sera l'administrateur — créez-le avant d'exposer le serveur"
+        );
     }
     auth::spawn_session_cleanup(Arc::new(db.clone()));
     let retention = config.executions_retention_days;

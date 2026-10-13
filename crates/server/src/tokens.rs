@@ -28,6 +28,7 @@ const MAX_TOKENS: i64 = 20;
 pub struct TokenSummary {
     id: Uuid,
     name: String,
+    scope: String,
     created_at: DateTime<Utc>,
     last_used_at: Option<DateTime<Utc>>,
     expires_at: Option<DateTime<Utc>>,
@@ -41,7 +42,7 @@ pub async fn list(
     require_member(&state.db, ws, user.id).await?;
     Ok(Json(
         sqlx::query_as(
-            "SELECT id, name, created_at, last_used_at, expires_at FROM api_tokens
+            "SELECT id, name, scope, created_at, last_used_at, expires_at FROM api_tokens
              WHERE workspace_id = $1 AND user_id = $2 ORDER BY created_at DESC",
         )
         .bind(ws)
@@ -57,6 +58,9 @@ pub struct CreateBody {
     name: String,
     /// Durée de validité en jours (`null` : sans expiration).
     expires_in_days: Option<i64>,
+    /// lecture | test (défaut) | complet
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -94,11 +98,12 @@ pub async fn create(
             "{MAX_TOKENS} jetons au maximum : révoquez-en un"
         )));
     }
+    let scope = Scope::parse(body.scope.as_deref().unwrap_or("test"))?;
     let token = format!("{PREFIX}{}", new_token()?);
     let summary: TokenSummary = sqlx::query_as(
-        "INSERT INTO api_tokens (id, token_hash, user_id, workspace_id, name, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, name, created_at, last_used_at, expires_at",
+        "INSERT INTO api_tokens (id, token_hash, user_id, workspace_id, name, expires_at, scope)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, name, scope, created_at, last_used_at, expires_at",
     )
     .bind(Uuid::new_v4())
     .bind(token_hash(&token))
@@ -106,6 +111,7 @@ pub async fn create(
     .bind(ws)
     .bind(name)
     .bind(expires_at)
+    .bind(scope.as_str())
     .fetch_one(&state.db)
     .await?;
     Ok(Json(Created { summary, token }))
@@ -132,9 +138,40 @@ pub async fn delete(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// Ce qu'un jeton d'IA peut faire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Consultation seulement.
+    Read,
+    /// Consultation, modification des workflows inactifs, exécutions en simulation.
+    Test,
+    /// Tout, y compris les envois réels et la modification des workflows actifs.
+    Full,
+}
+
+impl Scope {
+    fn parse(s: &str) -> AppResult<Self> {
+        match s {
+            "lecture" => Ok(Scope::Read),
+            "test" => Ok(Scope::Test),
+            "complet" => Ok(Scope::Full),
+            _ => Err(AppError::bad("Portée invalide (lecture, test ou complet)")),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scope::Read => "lecture",
+            Scope::Test => "test",
+            Scope::Full => "complet",
+        }
+    }
+}
+
 /// Identité d'un appel authentifié par jeton.
 #[derive(Debug, Clone)]
 pub struct TokenAuth {
+    pub scope: Scope,
     pub token_id: Uuid,
     /// Nom du jeton (affiché aux autres membres : « Claude »…).
     pub name: String,
@@ -146,6 +183,7 @@ pub struct TokenAuth {
 #[derive(sqlx::FromRow)]
 struct TokenRow {
     token_id: Uuid,
+    scope: String,
     name: String,
     user_id: Uuid,
     user_name: String,
@@ -163,7 +201,7 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> AppResult<To
         .filter(|t| t.starts_with(PREFIX) && t.len() <= 128)
         .ok_or(AppError::Unauthorized)?;
     let row: Option<TokenRow> = sqlx::query_as(
-        "SELECT t.id AS token_id, t.name, u.id AS user_id, u.display_name AS user_name, t.workspace_id, t.last_used_at
+        "SELECT t.id AS token_id, t.scope, t.name, u.id AS user_id, u.display_name AS user_name, t.workspace_id, t.last_used_at
          FROM api_tokens t
          JOIN users u ON u.id = t.user_id
          JOIN workspace_members m ON m.workspace_id = t.workspace_id AND m.user_id = t.user_id
@@ -174,6 +212,7 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> AppResult<To
     .await?;
     let TokenRow {
         token_id,
+        scope,
         name,
         user_id,
         user_name,
@@ -187,6 +226,8 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap) -> AppResult<To
             .await?;
     }
     Ok(TokenAuth {
+        // Valeur contrainte en base ; une valeur inattendue retombe sur le plus restrictif.
+        scope: Scope::parse(&scope).unwrap_or(Scope::Read),
         token_id,
         name,
         user_id,

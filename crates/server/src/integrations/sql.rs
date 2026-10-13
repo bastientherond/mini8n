@@ -171,6 +171,10 @@ pub async fn query(
     let max = (num_param(p, "max_rows", 10_000.0).max(1.0) as usize).min(MAX_ROWS);
     let bound = Bound::parse(&sql, &Scope::new(input.as_ref()))?;
     let sets = bound.values(input.as_ref(), str_param(p, "each") == "pour chaque ligne")?;
+    if ctx.read_only {
+        // Texte SQL seul : les expressions {{ … }} deviennent des paramètres liés.
+        read_only_guard(&bound.sql(|n| format!("${n}")))?;
+    }
     if !bound.is_empty() && db == Db::Postgres && !is_select(&sql) {
         return Err(
             "Avec des expressions {{ … }}, la requête doit être un SELECT (ou WITH … SELECT)"
@@ -178,16 +182,25 @@ pub async fn query(
         );
     }
     let mut conn = connect(ctx, db, p).await?;
+    let read_only = ctx.read_only;
     let fut = async {
         let mut rows: Vec<Value> = Vec::new();
         match &mut conn {
-            // Sans expression : protocole texte, la requête est envoyée telle quelle.
-            _ if bound.is_empty() => {
+            // Sans expression ni simulation : protocole texte, requête envoyée telle quelle.
+            _ if bound.is_empty() && !read_only => {
                 for _ in &sets {
                     fetch_text(&mut conn, &sql, max, &mut rows).await?;
                 }
             }
+            // Protocole étendu : une seule instruction possible ; en simulation, dans une
+            // transaction en lecture seule annulée à la fin.
             Conn::Pg(c) => {
+                if read_only {
+                    sqlx::query("BEGIN READ ONLY")
+                        .execute(&mut *c)
+                        .await
+                        .map_err(|e| short(&e))?;
+                }
                 let sql = pg_prepare(c, &bound).await?;
                 for values in &sets {
                     let mut q = sqlx::query(&sql);
@@ -206,9 +219,26 @@ pub async fn query(
                         break;
                     }
                 }
+                if read_only {
+                    sqlx::query("ROLLBACK")
+                        .execute(&mut *c)
+                        .await
+                        .map_err(|e| short(&e))?;
+                }
             }
             Conn::My(_) => {
                 let sql = bound.sql(|n| format!("@mini8n_p{n}"));
+                if read_only {
+                    // Une seule instruction (vérifiée plus haut), dans une transaction en
+                    // lecture seule ; la connexion est fermée sans validation.
+                    let Conn::My(c) = &mut conn else {
+                        unreachable!()
+                    };
+                    sqlx::query("START TRANSACTION READ ONLY")
+                        .execute(&mut *c)
+                        .await
+                        .map_err(|e| short(&e))?;
+                }
                 for values in &sets {
                     // Valeurs liées dans des variables de session, puis requête en protocole texte.
                     let Conn::My(c) = &mut conn else {
@@ -241,6 +271,59 @@ pub async fn query(
         .map_err(|_| "requête : délai dépassé".to_string())??;
     close(conn).await;
     table_of(Value::Array(rows))
+}
+
+/// Simulation (jeton d'IA « test ») : la requête doit être UNE lecture. Une session ou une
+/// transaction en lecture seule ne suffit pas : une requête à plusieurs instructions pourrait
+/// la rétablir en écriture (`COMMIT; SET … READ WRITE; DELETE …`). Refusés : séparateur `;`,
+/// commentaires exécutables MySQL `/*! … */`, écriture de fichier (`INTO OUTFILE`), blocs
+/// et fonctions PL/SQL ; seuls `SELECT` et `WITH` sont admis en tête.
+pub(crate) fn read_only_guard(sql: &str) -> Result<(), String> {
+    let refuse = |why: &str| {
+        Err(format!(
+            "Simulation : {why} (seule une lecture SELECT est permise)"
+        ))
+    };
+    let body = sql.trim().trim_end_matches(';').trim_end();
+    if body.contains(';') {
+        return refuse("une seule instruction");
+    }
+    if body.contains("/*!") {
+        return refuse("commentaires exécutables interdits");
+    }
+    // Premier mot, après les commentaires de tête.
+    let mut rest = body;
+    loop {
+        rest = rest.trim_start();
+        if let Some(r) = rest.strip_prefix("--") {
+            rest = r.split_once('\n').map_or("", |(_, after)| after);
+        } else if let Some(r) = rest.strip_prefix("/*") {
+            let (comment, after) = r.split_once("*/").unwrap_or((r, ""));
+            // Commentaires imbriqués (PostgreSQL) : lecture ambiguë du premier mot, refusés.
+            if comment.contains("/*") {
+                return refuse("commentaires imbriqués interdits");
+            }
+            rest = after;
+        } else {
+            break;
+        }
+    }
+    let first: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if !matches!(first.as_str(), "select" | "with") {
+        return refuse("instruction non autorisée");
+    }
+    let forbidden = ["outfile", "dumpfile", "function", "procedure", "pragma"];
+    if body
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|w| forbidden.contains(&w.to_ascii_lowercase().as_str()))
+    {
+        return refuse("mot-clé non autorisé");
+    }
+    Ok(())
 }
 
 /// Exécute `sql` en protocole texte et ajoute ses lignes (jusqu'à `max` au total).
@@ -510,6 +593,34 @@ pub async fn write(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn simulation_allows_only_one_read() {
+        for ok in [
+            "SELECT 1",
+            "  select * from t where x = 'a'  ;",
+            "-- commentaire\nWITH x AS (SELECT 1) SELECT * FROM x",
+            "/* lecture */ SELECT current_setting('transaction_read_only')",
+            "SELECT * FROM t WHERE id = $1",
+        ] {
+            assert!(super::read_only_guard(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "SET default_transaction_read_only = off; COMMIT; DELETE FROM clients",
+            "BEGIN READ WRITE; DELETE FROM clients; COMMIT",
+            "SET SESSION TRANSACTION READ WRITE",
+            "/*!50000 DELETE FROM t */ SELECT 1",
+            "SELECT * FROM t INTO OUTFILE '/tmp/x'",
+            "BEGIN COMMIT; DELETE FROM t; COMMIT; END; -- x",
+            "WITH FUNCTION f RETURN NUMBER IS PRAGMA AUTONOMOUS_TRANSACTION; BEGIN RETURN 1; END; SELECT f FROM dual",
+            "DELETE FROM t",
+            "-- SELECT\nDELETE FROM t",
+            "/* /* */ DELETE FROM t */ SELECT 1",
+        ] {
+            assert!(super::read_only_guard(bad).is_err(), "{bad}");
+        }
+    }
+
     use super::*;
 
     #[test]

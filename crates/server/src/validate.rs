@@ -23,6 +23,13 @@ pub fn email(raw: &str) -> AppResult<(String, String)> {
     {
         return Err(invalid());
     }
+    // Adresse nue uniquement : pas de forme « Nom <adresse> », de chevrons ni de séparateurs,
+    // qui feraient livrer les e-mails à une autre adresse que celle enregistrée.
+    if email.contains(['<', '>', '"', ',', ';', '(', ')', '[', ']', '\\'])
+        || email.parse::<lettre::Address>().is_err()
+    {
+        return Err(invalid());
+    }
     Ok((email.to_string(), email.to_lowercase()))
 }
 
@@ -78,7 +85,19 @@ mod tests {
     fn emails() {
         assert_eq!(email(" Alice@Example.COM ").unwrap().1, "alice@example.com");
         for bad in [
-            "", "a", "a@b", "a@@b.c", "a b@c.d", "@b.c", "a@.c", "a@b..c",
+            "",
+            "a",
+            "a@b",
+            "a@@b.c",
+            "a b@c.d",
+            "@b.c",
+            "a@.c",
+            "a@b..c",
+            // Formes qui livreraient à une autre adresse que celle enregistrée.
+            "<victime@corp.com>",
+            "Nom <a@b.c>",
+            "a@b.c,c@d.e",
+            "\"a\"@b.c",
         ] {
             assert!(email(bad).is_err(), "{bad}");
         }

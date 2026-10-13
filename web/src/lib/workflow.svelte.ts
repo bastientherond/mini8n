@@ -106,6 +106,8 @@ class WorkflowState {
 	saveState = $state<SaveState>('idle');
 	/** Workflow actif : ses déclencheurs automatiques sont en service sur le serveur. */
 	active = $state(false);
+	/** Données des exécutions conservées dans l'historique (désactivable : données personnelles). */
+	keepData = $state(true);
 	triggers = $state.raw<TriggerInfo[]>([]);
 	activating = $state(false);
 	saveError = $state<string | null>(null);
@@ -632,6 +634,7 @@ class WorkflowState {
 
 		this.serverVersion = doc.version;
 		this.savedSnapshot = JSON.stringify(remote);
+		this.keepData = doc.keepData ?? true;
 		if (this.active !== doc.active) {
 			this.active = doc.active;
 			if (doc.active) void this.refreshTriggers();
@@ -651,6 +654,7 @@ class WorkflowState {
 		this.workflowId = doc.id;
 		this.serverVersion = doc.version;
 		this.active = doc.active;
+		this.keepData = doc.keepData ?? true;
 		this.triggers = [];
 		if (doc.active) void this.refreshTriggers();
 		this.savedSnapshot = this.snapshot();

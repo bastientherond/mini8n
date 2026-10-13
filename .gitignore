@@ -7,3 +7,4 @@ web/src/lib/engine/pkg/
 secrets/
 .env
 .claude/
+backups/

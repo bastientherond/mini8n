@@ -10,6 +10,20 @@
 	import { logout } from '$lib/ui.svelte';
 	import Page from './Page.svelte';
 
+	let sending = $state(false);
+
+	async function sendVerification() {
+		sending = true;
+		try {
+			await api.sendVerification();
+			toast.success(`Lien de vérification envoyé à ${session.user?.email}`);
+		} catch (e) {
+			toast.error(errorMessage(e));
+		} finally {
+			sending = false;
+		}
+	}
+
 	let current = $state('');
 	let next = $state('');
 	let confirm = $state('');
@@ -49,6 +63,16 @@
 				<div class="space-y-1.5">
 					<Label for="account-email">E-mail</Label>
 					<Input id="account-email" value={session.user?.email} readonly />
+				</div>
+				<div class="flex flex-wrap items-center gap-2 text-xs sm:col-span-2">
+					{#if session.user?.emailVerified}
+						<span class="text-emerald-600 dark:text-emerald-400">✓ Adresse vérifiée</span>
+					{:else}
+						<span class="text-muted-foreground">Adresse non vérifiée : on vous ajoute à un workspace par invitation.</span>
+						{#if session.canVerifyEmail}
+							<Button size="sm" variant="outline" disabled={sending} onclick={sendVerification}>Vérifier mon adresse</Button>
+						{/if}
+					{/if}
 				</div>
 				<p class="text-muted-foreground text-xs sm:col-span-2">
 					Membre de {session.workspaces.length} workspace{session.workspaces.length > 1 ? 's' : ''}.

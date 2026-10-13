@@ -1,5 +1,6 @@
 [package]
 name = "mini8n-server"
+publish = false
 description = "API mini8n : comptes, sessions, workspaces et stockage des workflows"
 version.workspace = true
 edition.workspace = true

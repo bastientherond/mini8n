@@ -39,6 +39,8 @@ pub struct WorkflowDoc {
     name: String,
     version: i32,
     active: bool,
+    /// Aperçu des données des exécutions conservé dans l'historique.
+    keep_data: bool,
     definition: sqlx::types::Json<Value>,
     updated_at: DateTime<Utc>,
     /// Motif de désactivation automatique (déclencheur devenu invalide à la sauvegarde).
@@ -134,7 +136,7 @@ pub async fn list(
 }
 
 pub(crate) async fn fetch(state: &AppState, ws: Uuid, id: Uuid) -> AppResult<WorkflowDoc> {
-    sqlx::query_as("SELECT id, name, version, active, definition, updated_at FROM workflows WHERE id = $1 AND workspace_id = $2")
+    sqlx::query_as("SELECT id, name, version, active, keep_data, definition, updated_at FROM workflows WHERE id = $1 AND workspace_id = $2")
         .bind(id)
         .bind(ws)
         .fetch_optional(&state.db)
@@ -243,6 +245,72 @@ pub async fn update(
     state.live.saved(id, user.id, &doc);
     doc.deactivated = deactivated;
     Ok(Json(doc))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DataBody {
+    keep_data: bool,
+}
+
+/// `PUT …/workflows/{id}/data` : conserver ou non les données des exécutions. Désactiver
+/// efface aussi les aperçus déjà enregistrés (données personnelles).
+pub async fn set_keep_data(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<DataBody>,
+) -> AppResult<Json<WorkflowDoc>> {
+    // Désactiver (protéger les données) : tout membre ; réactiver : propriétaires seulement.
+    if body.keep_data {
+        crate::workspaces::require_owner(&state.db, ws, user.id).await?;
+    } else {
+        require_member(&state.db, ws, user.id).await?;
+    }
+    let mut tx = state.db.begin().await?;
+    let done =
+        sqlx::query("UPDATE workflows SET keep_data = $3 WHERE id = $1 AND workspace_id = $2")
+            .bind(id)
+            .bind(ws)
+            .bind(body.keep_data)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+    if done == 0 {
+        return Err(AppError::NotFound);
+    }
+    if !body.keep_data {
+        sqlx::query(
+            "UPDATE executions SET output = NULL WHERE workflow_id = $1 AND workspace_id = $2",
+        )
+        .bind(id)
+        .bind(ws)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    tracing::info!(workflow_id = %id, by = %user.id, keep_data = body.keep_data, "conservation des données");
+    let doc = fetch(&state, ws, id).await?;
+    state.live.saved(id, user.id, &doc);
+    Ok(Json(doc))
+}
+
+/// `DELETE …/workflows/{id}/executions` : efface l'historique du workflow (propriétaires),
+/// par exemple pour une demande d'effacement de données personnelles.
+pub async fn clear_executions(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, id)): Path<(Uuid, Uuid)>,
+) -> AppResult<Json<serde_json::Value>> {
+    crate::workspaces::require_owner(&state.db, ws, user.id).await?;
+    let deleted = sqlx::query("DELETE FROM executions WHERE workflow_id = $1 AND workspace_id = $2 AND status <> 'running'")
+        .bind(id)
+        .bind(ws)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
+    tracing::info!(workflow_id = %id, by = %user.id, deleted, "historique effacé");
+    Ok(Json(serde_json::json!({ "deleted": deleted })))
 }
 
 pub async fn delete(

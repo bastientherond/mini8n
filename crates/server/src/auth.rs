@@ -183,7 +183,7 @@ fn logged_out() -> Response {
     res
 }
 
-async fn create_session(
+pub(crate) async fn create_session_cookie(
     state: &AppState,
     headers: &HeaderMap,
     user_id: Uuid,
@@ -295,6 +295,8 @@ pub struct UserDto {
     id: Uuid,
     email: String,
     name: String,
+    #[serde(rename = "emailVerified")]
+    email_verified: bool,
 }
 
 #[derive(Serialize)]
@@ -303,6 +305,21 @@ pub struct MeResponse {
     workspaces: Vec<WorkspaceSummary>,
     #[serde(rename = "allowRegistration")]
     allow_registration: bool,
+    /// Un e-mail de vérification peut être envoyé (SMTP de la plateforme configuré).
+    #[serde(rename = "canVerifyEmail")]
+    can_verify_email: bool,
+}
+
+/// Inscriptions publiques ouvertes : par configuration, ou pour créer le tout premier compte.
+async fn registration_open(state: &AppState) -> AppResult<bool> {
+    if state.config.allow_registration {
+        return Ok(true);
+    }
+    Ok(
+        !sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users)")
+            .fetch_one(&state.db)
+            .await?,
+    )
 }
 
 async fn me_response(
@@ -311,10 +328,21 @@ async fn me_response(
     email: String,
     name: String,
 ) -> AppResult<MeResponse> {
+    let email_verified: bool =
+        sqlx::query_scalar("SELECT email_verified_at IS NOT NULL FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
     Ok(MeResponse {
-        user: UserDto { id, email, name },
+        user: UserDto {
+            id,
+            email,
+            name,
+            email_verified,
+        },
         workspaces: list_for_user(&state.db, id).await?,
         allow_registration: state.config.allow_registration,
+        can_verify_email: state.mailer.is_some(),
     })
 }
 
@@ -338,16 +366,32 @@ pub async fn register(
     headers: HeaderMap,
     Json(body): Json<RegisterBody>,
 ) -> AppResult<Response> {
-    if !state.config.allow_registration {
-        return Err(AppError::Forbidden("Les inscriptions sont fermées".into()));
-    }
     state.limits.register_ip.limit(&ip)?;
+    if !registration_open(&state).await? {
+        return Err(AppError::Forbidden(
+            "Les inscriptions sont fermées : demandez une invitation à un membre".into(),
+        ));
+    }
     let (email, email_normalized) = validate::email(&body.email)?;
     let name = validate::label(&body.name, "Nom", 80)?;
     validate::password(&body.password, &email_normalized)?;
 
     let hash = hash_password(&state, body.password).await?;
     let id = Uuid::new_v4();
+    let mut tx = state.db.begin().await?;
+    // Inscriptions fermées : seul le premier compte passe, même avec des demandes simultanées.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('mini8n:register'))")
+        .execute(&mut *tx)
+        .await?;
+    if !state.config.allow_registration
+        && sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users)")
+            .fetch_one(&mut *tx)
+            .await?
+    {
+        return Err(AppError::Forbidden(
+            "Les inscriptions sont fermées : demandez une invitation à un membre".into(),
+        ));
+    }
     let inserted = sqlx::query(
         "INSERT INTO users (id, email, email_normalized, display_name, password_hash)
          VALUES ($1, $2, $3, $4, $5) ON CONFLICT (email_normalized) DO NOTHING",
@@ -357,16 +401,17 @@ pub async fn register(
     .bind(&email_normalized)
     .bind(&name)
     .bind(&hash)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?
     .rows_affected();
+    tx.commit().await?;
     if inserted == 0 {
         return Err(AppError::Conflict(
             "Impossible de créer ce compte. Si vous en avez déjà un, connectez-vous.".into(),
         ));
     }
     tracing::info!(user_id = %id, "compte créé");
-    let cookie = create_session(&state, &headers, id, &ip).await?;
+    let cookie = create_session_cookie(&state, &headers, id, &ip).await?;
     let me = me_response(&state, id, email, name).await?;
     Ok(with_cookie(StatusCode::CREATED, cookie, Json(me)))
 }
@@ -449,7 +494,7 @@ pub async fn login(
         .bind(id)
         .execute(&state.db)
         .await?;
-    let cookie = create_session(&state, &headers, id, &ip).await?;
+    let cookie = create_session_cookie(&state, &headers, id, &ip).await?;
     let me = me_response(&state, id, email, name).await?;
     Ok(with_cookie(StatusCode::OK, cookie, Json(me)))
 }
@@ -465,8 +510,15 @@ pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> AppRes
 }
 
 /// Configuration publique pour l'écran d'accueil.
-pub async fn public_config(State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "allowRegistration": state.config.allow_registration }))
+pub async fn public_config(State(state): State<AppState>) -> AppResult<Json<serde_json::Value>> {
+    let first_account = !sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users)")
+        .fetch_one(&state.db)
+        .await?;
+    Ok(Json(serde_json::json!({
+        "allowRegistration": state.config.allow_registration || first_account,
+        "firstAccount": first_account,
+        "passwordReset": state.mailer.is_some(),
+    })))
 }
 
 pub async fn me(State(state): State<AppState>, user: AuthUser) -> AppResult<Json<MeResponse>> {
@@ -512,17 +564,33 @@ pub async fn change_password(
         .bind(&user.session_hash)
         .execute(&mut *tx)
         .await?;
+    // Un lien « mot de passe oublié » encore valide ne doit pas survivre au changement.
+    sqlx::query("DELETE FROM email_tokens WHERE user_id = $1 AND purpose = 'reset'")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     tracing::info!(user_id = %user.id, "mot de passe modifié");
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// Déconnecte toutes les sessions de l'utilisateur.
+/// Déconnecte toutes les sessions et révoque les jetons d'IA (compte peut-être compromis).
 pub async fn logout_all(State(state): State<AppState>, user: AuthUser) -> AppResult<Response> {
+    let mut tx = state.db.begin().await?;
     sqlx::query("DELETE FROM sessions WHERE user_id = $1")
         .bind(user.id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+    let revoked: Vec<Uuid> =
+        sqlx::query_scalar("DELETE FROM api_tokens WHERE user_id = $1 RETURNING id")
+            .bind(user.id)
+            .fetch_all(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    for token in revoked {
+        state.mcp.forget_token(&state.live, token);
+    }
     Ok(logged_out())
 }
 
@@ -532,6 +600,9 @@ pub fn spawn_session_cleanup(state: Arc<sqlx::PgPool>) {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
         loop {
             tick.tick().await;
+            if let Err(e) = crate::accounts::purge_expired(&state).await {
+                tracing::error!(%e, "purge des jetons e-mail");
+            }
             match sqlx::query("DELETE FROM sessions WHERE expires_at <= now()")
                 .execute(&*state)
                 .await

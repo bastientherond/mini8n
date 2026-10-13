@@ -28,18 +28,25 @@ struct Server {
 }
 
 async fn setup() -> Option<Server> {
+    setup_with(false).await
+}
+
+/// `allow_private` : bases de données locales joignables (tests de lecture SQL).
+async fn setup_with(allow_private: bool) -> Option<Server> {
     let url = std::env::var("TEST_DATABASE_URL").ok()?;
     let db = PgPool::connect(&url).await.expect("connexion");
     MIGRATOR.run(&db).await.expect("migrations");
     let config = Config {
         bind: "127.0.0.1:0".parse().unwrap(),
         database_url: url,
+        database_max_connections: 10,
         public_origins: vec![ORIGIN.into()],
         cookie_secure: CookieSecure::Never,
         trust_proxy: false,
         session_ttl_hours: 1,
         allow_registration: true,
-        http_allow_private: false,
+        mail: None,
+        http_allow_private: allow_private,
         runner_threads: 1,
         execution_timeout_secs: 30,
         executions_retention_days: 30,
@@ -48,6 +55,7 @@ async fn setup() -> Option<Server> {
         credentials_key: [42u8; 32],
         connectors_url: None,
         connectors_token: None,
+        metrics_token: None,
     };
     let app = app(AppState::new(db, config));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -498,4 +506,253 @@ async fn ai_debugs_a_workflow_live() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// Portées des jetons : lecture seule, test (simulation, workflows inactifs), complet.
+#[tokio::test]
+async fn token_scopes_limit_what_the_ai_can_do() {
+    let Some(server) = setup_with(true).await else {
+        return;
+    };
+    let app = &server.app;
+    let (alice, _) = register(app, "Alice").await;
+    let (_, ws, _) = api(
+        app,
+        "POST",
+        "/api/workspaces",
+        json!({"name": "Portées"}),
+        Some(&alice),
+    )
+    .await;
+    let ws = ws["id"].as_str().unwrap().to_string();
+    let token = |scope: &'static str| {
+        let ws = ws.clone();
+        let alice = alice.clone();
+        async move {
+            let (status, t, _) = api(
+                app,
+                "POST",
+                &format!("/api/workspaces/{ws}/tokens"),
+                json!({"name": scope, "scope": scope}),
+                Some(&alice),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{t}");
+            assert_eq!(t["scope"], scope);
+            t["token"].as_str().unwrap().to_string()
+        }
+    };
+    let (read, test, full) = (
+        token("lecture").await,
+        token("test").await,
+        token("complet").await,
+    );
+
+    // Base de test (lecture) et workflow : déclencheur → lecture SQL → e-mail.
+    let url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let u = url::Url::parse(&url).unwrap();
+    let (_, cred, _) = api(
+        app,
+        "POST",
+        &format!("/api/workspaces/{ws}/credentials"),
+        json!({"name": "Test", "kind": "postgres", "data": {
+            "host": u.host_str().unwrap(), "port": u.port().unwrap_or(5432), "database": u.path().trim_start_matches('/'),
+            "user": u.username(), "password": u.password().unwrap_or_default(), "ssl": "désactivé"}}),
+        Some(&alice),
+    )
+    .await;
+    let (_, smtp, _) = api(
+        app,
+        "POST",
+        &format!("/api/workspaces/{ws}/credentials"),
+        json!({"name": "SMTP", "kind": "smtp", "data": {"host": "smtp.exemple.test", "port": "587", "security": "STARTTLS", "user": "", "password": "", "from": "a@exemple.test"}}),
+        Some(&alice),
+    )
+    .await;
+    let (wf, _) = call(app, &test, "create_workflow", json!({"name": "Rapport"})).await;
+    let wf = wf["workflow_id"].as_str().unwrap().to_string();
+    let (go, _) = call(
+        app,
+        &test,
+        "add_node",
+        json!({"workflow_id": wf, "kind": "trigger_schedule"}),
+    )
+    .await;
+    let (q, _) = call(app, &test, "add_node", json!({"workflow_id": wf, "kind": "postgres_query", "connect_from": go["node_id"],
+        "params": {"credential": cred["id"], "query": "SELECT current_setting('transaction_read_only') AS ro"}})).await;
+    let (mail, _) = call(app, &test, "add_node", json!({"workflow_id": wf, "kind": "email_send", "name": "Envoi", "connect_from": q["node_id"],
+        "params": {"credential": smtp["id"], "to": "x@exemple.test"}})).await;
+    let q = q["node_id"].as_str().unwrap();
+
+    // Lecture : ni exécution ni modification ; les outils proposés le reflètent.
+    let (_, listed) = mcp(
+        app,
+        Some(&read),
+        None,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    )
+    .await;
+    let names: Vec<&str> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"get_workflow")
+            && !names.contains(&"run_workflow")
+            && !names.contains(&"update_node"),
+        "{names:?}"
+    );
+    let (msg, error) = call(app, &read, "run_workflow", json!({"workflow_id": wf})).await;
+    assert!(
+        error && msg.as_str().unwrap().contains("lecture seule"),
+        "{msg}"
+    );
+    let (_, error) = call(app, &read, "get_workflow", json!({"workflow_id": wf})).await;
+    assert!(!error);
+
+    // Test : simulation — l'e-mail est neutralisé (rien n'est envoyé, aucune erreur SMTP),
+    // la base est lue en lecture seule.
+    let (run, _) = call(app, &test, "run_workflow", json!({"workflow_id": wf})).await;
+    assert_eq!(run["status"], "success", "{run}");
+    assert_eq!(run["simulation"]["neutralised"], json!(["Envoi"]));
+    let read_only = run["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == q)
+        .unwrap();
+    assert_eq!(read_only["sample"], json!([{"ro": "on"}]), "{read_only}");
+
+    // Contournements de la lecture seule (revue de sécurité) : refusés avant exécution, ou
+    // bloqués par la transaction en lecture seule.
+    for attack in [
+        "SET default_transaction_read_only = off; COMMIT; CREATE TABLE mini8n_intrus (x int)",
+        "BEGIN READ WRITE; CREATE TABLE mini8n_intrus (x int); COMMIT",
+        "SELECT set_config('transaction_read_only', 'off', false)",
+    ] {
+        call(
+            app,
+            &test,
+            "update_node",
+            json!({"workflow_id": wf, "node_id": q, "params": {"query": attack}}),
+        )
+        .await;
+        let (run, _) = call(app, &test, "run_workflow", json!({"workflow_id": wf})).await;
+        let node = run["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == q)
+            .unwrap();
+        assert_eq!(node["status"], "error", "{attack} : {node}");
+    }
+    let (probe, _) = call(
+        app,
+        &full,
+        "run_workflow",
+        json!({"workflow_id": wf, "node_id": q}),
+    )
+    .await;
+    call(app, &test, "update_node", json!({"workflow_id": wf, "node_id": q, "params": {"query": "SELECT to_regclass('mini8n_intrus')::text AS t"}})).await;
+    let (check, _) = call(
+        app,
+        &full,
+        "run_workflow",
+        json!({"workflow_id": wf, "node_id": q}),
+    )
+    .await;
+    let node = check["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == q)
+        .unwrap();
+    assert_eq!(
+        node["sample"],
+        json!([{"t": null}]),
+        "aucune table créée ({probe})"
+    );
+    call(app, &test, "update_node", json!({"workflow_id": wf, "node_id": q, "params": {"query": "SELECT current_setting('transaction_read_only') AS ro"}})).await;
+
+    // Complet : exécution réelle (l'envoi est tenté et échoue : serveur SMTP fictif).
+    let (run, _) = call(app, &full, "run_workflow", json!({"workflow_id": wf})).await;
+    assert!(run.get("simulation").is_none());
+    let sent = run["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == mail["node_id"])
+        .unwrap();
+    assert_eq!(sent["status"], "error", "{sent}");
+    let real = run["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == q)
+        .unwrap();
+    assert_eq!(real["sample"], json!([{"ro": "off"}]));
+
+    // Workflow appelable par d'autres (« Appelé par un workflow ») : il s'exécute réellement
+    // depuis un workflow actif, un jeton « test » ne peut ni le modifier ni le rendre appelable.
+    let (child, _) = call(
+        app,
+        &test,
+        "create_workflow",
+        json!({"name": "Sous-workflow"}),
+    )
+    .await;
+    let child = child["workflow_id"].as_str().unwrap();
+    let (msg, error) = call(
+        app,
+        &test,
+        "add_node",
+        json!({"workflow_id": child, "kind": "trigger_workflow"}),
+    )
+    .await;
+    assert!(error && msg.as_str().unwrap().contains("appelé"), "{msg}");
+    let (_, error) = call(
+        app,
+        &full,
+        "add_node",
+        json!({"workflow_id": child, "kind": "trigger_workflow"}),
+    )
+    .await;
+    assert!(!error);
+    let (msg, error) = call(
+        app,
+        &test,
+        "add_node",
+        json!({"workflow_id": child, "kind": "filter"}),
+    )
+    .await;
+    assert!(error && msg.as_str().unwrap().contains("appelé"), "{msg}");
+
+    // Workflow actif : seul un jeton complet peut le modifier.
+    let (status, _, _) = api(
+        app,
+        "PUT",
+        &format!("/api/workspaces/{ws}/workflows/{wf}/active"),
+        json!({"active": true}),
+        Some(&alice),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (msg, error) = call(
+        app,
+        &test,
+        "update_node",
+        json!({"workflow_id": wf, "node_id": q, "name": "Lecture"}),
+    )
+    .await;
+    assert!(error && msg.as_str().unwrap().contains("actif"), "{msg}");
+    let (_, error) = call(
+        app,
+        &full,
+        "update_node",
+        json!({"workflow_id": wf, "node_id": q, "name": "Lecture"}),
+    )
+    .await;
+    assert!(!error);
 }

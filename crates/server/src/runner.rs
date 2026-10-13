@@ -92,6 +92,9 @@ pub struct Start {
     pub target: Option<String>,
     /// Suivi de la progression (affichage en direct).
     pub progress: Option<Progress>,
+    /// Simulation : les lectures de bases de données se font en session lecture seule
+    /// (les nœuds d'envoi sont neutralisés par l'appelant).
+    pub read_only: bool,
 }
 
 /// Progression d'une exécution : `(nœud, None)` au début, `(nœud, Some(résultat))` à la fin.
@@ -114,6 +117,7 @@ struct Ctx {
     workspace_id: Uuid,
     execution_id: Uuid,
     depth: u32,
+    read_only: bool,
 }
 
 struct Job {
@@ -162,6 +166,12 @@ impl Runner {
         Runner { inner }
     }
 
+    /// Exécutions en attente dans la file, et capacité de la file (supervision).
+    pub fn queue(&self) -> (usize, usize) {
+        let free = self.inner.tx.capacity();
+        (QUEUE_CAPACITY - free, QUEUE_CAPACITY)
+    }
+
     pub fn db(&self) -> &PgPool {
         &self.inner.db
     }
@@ -202,6 +212,7 @@ impl Runner {
                 return Ok((id, done_rx));
             }
         };
+        let read_only = s.read_only;
         let (reply_tx, reply_rx) = oneshot::channel();
         let job = Job {
             workflow: workflow.clone(),
@@ -212,6 +223,7 @@ impl Runner {
                 workspace_id: s.workspace_id,
                 execution_id: id,
                 depth: 0,
+                read_only: s.read_only,
             },
             reply: reply_tx,
         };
@@ -227,6 +239,9 @@ impl Runner {
 
         let runner = self.clone();
         let kind = s.trigger_kind;
+        // Les échecs d'exécutions manuelles (éditeur, IA) et des simulations ne déclenchent
+        // pas les workflows « Sur erreur » : ceux-ci agissent réellement (e-mails, messages…).
+        let automatic = !matches!(kind, "manual" | "error") && !read_only;
         tokio::spawn(async move {
             let report = reply_rx
                 .await
@@ -236,7 +251,7 @@ impl Runner {
                 tracing::error!(%e, execution_id = %id, "enregistrement de l'exécution");
             }
             // Un échec automatique déclenche les workflows « Sur erreur » (jamais en cascade).
-            if !summary.ok && kind != "error" {
+            if !summary.ok && automatic {
                 runner
                     .fire_error_triggers(
                         s.workspace_id,
@@ -306,6 +321,7 @@ impl Runner {
                 trigger: Some(TriggerEvent { node_id, data }),
                 target: None,
                 progress: None,
+                read_only: false,
             };
             if let Err(e) = self.start(start).await {
                 tracing::warn!(%e, workflow_id = %wf_id, "déclencheur d'erreur non lancé");
@@ -324,11 +340,16 @@ struct ErrorTarget {
 }
 
 /// Marque les exécutions interrompues par un arrêt du serveur.
-pub async fn recover_interrupted(db: &PgPool) -> Result<u64, sqlx::Error> {
+///
+/// Une exécution est bornée par `EXECUTION_TIMEOUT_SECS` : au-delà (plus une marge), une
+/// exécution encore « en cours » a perdu son serveur (arrêt, plantage). Les plus récentes
+/// peuvent tourner sur une autre instance : elles ne sont pas touchées.
+pub async fn recover_interrupted(db: &PgPool, timeout_secs: u64) -> Result<u64, sqlx::Error> {
     Ok(sqlx::query(
-        "UPDATE executions SET status = 'error', error = 'Interrompue (redémarrage du serveur)', finished_at = now()
-         WHERE status = 'running'",
+        "UPDATE executions SET status = 'error', error = 'Interrompue (arrêt du serveur)', finished_at = now()
+         WHERE status = 'running' AND started_at < now() - make_interval(secs => $1)",
     )
+    .bind((timeout_secs + 60) as f64)
     .execute(db)
     .await?
     .rows_affected())
@@ -419,6 +440,7 @@ impl Host for ServerHost {
             workspace_id: self.ctx.workspace_id,
             execution_id: Some(self.ctx.execution_id),
             user_id: None,
+            read_only: self.ctx.read_only,
         };
         let node = node.clone();
         // Pilotes SQL, SMTP et client HTTP tournent sur le runtime principal.
@@ -512,6 +534,7 @@ impl Host for ServerHost {
                     workspace_id: ws,
                     execution_id: child,
                     depth: self.ctx.depth + 1,
+                    read_only: self.ctx.read_only,
                 },
                 progress: None,
             };
@@ -671,7 +694,18 @@ async fn record_start(
 
 async fn record_finish(db: &PgPool, id: Uuid, s: &Summary) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE executions SET status = $2, error = $3, finished_at = now(), duration_ms = $4, report = $5, output = $6
+        // Aperçu des lignes produites : seulement si le workflow ET tous ceux qui l'ont appelé
+        // (sous-workflows) conservent leurs données — un parent « sans données » transmet ses
+        // lignes à l'enfant, qui ne doit pas les garder.
+        "UPDATE executions SET status = $2, error = $3, finished_at = now(), duration_ms = $4, report = $5,
+                output = CASE WHEN NOT EXISTS (
+                    WITH RECURSIVE chain AS (
+                        SELECT e.parent_id, e.workflow_id FROM executions e WHERE e.id = $1
+                        UNION ALL
+                        SELECT p.parent_id, p.workflow_id FROM executions p JOIN chain c ON p.id = c.parent_id
+                    )
+                    SELECT 1 FROM chain JOIN workflows w ON w.id = chain.workflow_id WHERE NOT w.keep_data
+                ) THEN $6 END
          WHERE id = $1",
     )
     .bind(id)

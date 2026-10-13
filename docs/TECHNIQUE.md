@@ -49,6 +49,7 @@ Interface (inspirée de Supabase) :
 | `web` | `web/Dockerfile` | nginx non-root : interface + reverse proxy `/api` |
 | `connectors` | `connectors/Dockerfile` | Node non-root : pilote Oracle « thin » (node-oracledb), joignable par l'API seulement |
 | `proxy` | `caddy:2.11-alpine` | TLS automatique (profil `tls`) |
+| `backup` | `postgres:18-alpine` | sauvegarde périodique de la base (`pg_dump`, volume `db-backups`) |
 
 En production, avec un nom de domaine pointant vers le serveur :
 
@@ -56,6 +57,124 @@ En production, avec un nom de domaine pointant vers le serveur :
 # .env : SITE_ADDRESS=mini8n.exemple.com  et  PUBLIC_ORIGIN=https://mini8n.exemple.com
 docker compose --profile tls up -d --build
 ```
+
+## Données personnelles
+
+L'historique des exécutions (page Exécutions) garde, pour chaque exécution automatique, le
+statut, la durée, le nombre de lignes et les colonnes de chaque nœud, les erreurs et un
+**aperçu de la sortie** (20 premières lignes), pendant `EXECUTIONS_RETENTION_DAYS` jours (30).
+
+- **Par workflow** (menu « … » de l'éditeur) : *Conserver les données des exécutions*. Désactivé,
+  l'historique ne garde plus aucune ligne (statuts, comptes, colonnes et erreurs seulement) et
+  les aperçus déjà enregistrés sont effacés — à utiliser pour les workflows qui traitent des
+  données personnelles (clients, e-mails…).
+- **Effacer l'historique** d'un workflow (propriétaires) : pour une demande d'effacement.
+- Les données d'une exécution lancée par une IA restent 30 minutes en mémoire seulement
+  (consultation par `get_node_output`), jamais en base au-delà de l'historique ci-dessus.
+- Les sauvegardes contiennent l'historique : leur rotation (`BACKUP_KEEP`) fixe la durée
+  maximale de conservation dans les sauvegardes.
+
+## Sauvegardes et restauration
+
+Le service `backup` sauvegarde la base toutes les `BACKUP_INTERVAL_HOURS` heures (24 par
+défaut) dans le volume `db-backups` et garde les `BACKUP_KEEP` plus récentes (14). Chaque
+sauvegarde est vérifiée (`pg_restore --list`) avant de remplacer les précédentes ; un échec
+apparaît dans `docker compose logs backup`.
+
+```bash
+./scripts/backup.sh              # sauvegarde immédiate, copiée dans ./backups (à envoyer hors site)
+./scripts/restore.sh backups/mini8n-20260101-030000.dump
+```
+
+- **Hors site** : copiez régulièrement `./backups` ailleurs (autre machine, stockage objet) —
+  un volume Docker disparaît avec le serveur.
+- **Clé des identifiants** : `secrets/credentials_key.txt` n'est volontairement **pas** dans
+  les sauvegardes. Conservez-la à part (gestionnaire de mots de passe) : sans elle, les
+  identifiants d'une base restaurée sont illisibles ; avec elle seule, une sauvegarde volée
+  ne révèle pas les mots de passe des bases et du SMTP.
+- **Restauration** : la sauvegarde est chargée dans une base neuve, puis échangée en une
+  transaction avec la base actuelle, conservée sous `mini8n_avant_<date>` pour un retour
+  arrière. Un fichier invalide ou incomplet ne modifie rien. L'API est arrêtée pendant
+  l'échange ; ses migrations mettent le schéma à jour au redémarrage.
+- **Après restauration** : les sessions et liens par e-mail de la sauvegarde sont invalidés
+  (chacun se reconnecte) ; vérifiez les jetons d'accès des IA, qui reviennent tels qu'au moment
+  de la sauvegarde. Ne restaurez que vos propres sauvegardes (exécution avec les droits
+  d'administrateur de la base).
+- **Tester** : restaurez une sauvegarde de temps en temps (par exemple sur une machine de
+  test) — une sauvegarde jamais restaurée n'est qu'une hypothèse.
+
+## Supervision
+
+- **Santé** : `GET /api/health` (base joignable) ; chaque conteneur a son healthcheck.
+- **Journaux** : `LOG_FORMAT=json` pour un collecteur (Loki, Elastic…), niveau via `RUST_LOG`.
+- **Métriques** : `GET /api/metrics` au format Prometheus, avec l'en-tête
+  `Authorization: Bearer <METRICS_TOKEN>` (sans jeton configuré, l'URL répond 404) :
+  base joignable et pool de connexions, file d'exécution, exécutions des dernières 24 h par
+  statut, date du dernier échec, workflows actifs, collaboration en direct.
+- **Alertes** : `deploy/prometheus/alerts.yml` — serveur ou base injoignable, file presque
+  pleine, nouvelles exécutions en échec, exécutions bloquées, pool saturé.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: mini8n
+    scheme: https
+    metrics_path: /api/metrics
+    authorization: { credentials_file: /etc/prometheus/mini8n_token }
+    static_configs: [{ targets: ["mini8n.exemple.com"] }]
+rule_files: [alerts.yml]
+```
+
+Côté métier, le déclencheur « Sur erreur » permet aussi d'être prévenu (e-mail, Slack…) de
+l'échec d'un workflow précis.
+
+## Capacité (test de charge)
+
+`scripts/load-test.sh` (ApacheBench) prépare un workspace temporaire, mesure l'API et une
+rafale de webhooks, vérifie qu'aucune exécution acceptée n'est perdue, puis nettoie. À lancer
+contre un serveur de test (compte existant : `EMAIL=… PASSWORD=… ./scripts/load-test.sh URL`).
+
+Mesures de référence (serveur compilé en release, `RUNNER_THREADS=4`, pool de 10 connexions,
+PostgreSQL local, poste Apple Silicon ; API appelée directement, sans nginx) :
+
+| Scénario | Résultat |
+| --- | --- |
+| `GET /api/health` (50 en parallèle) | ≈ 8 000 req/s, p99 16 ms |
+| `GET /api/workspaces` authentifié (session + base) | ≈ 4 100 req/s, p99 15 ms |
+| 280 webhooks en rafale, workflow de 5 nœuds sur 20 000 lignes | toutes terminées en 2,6 s (≈ 110 exécutions/s), médiane 27 ms, aucune perte |
+
+Lecture : depuis une même IP, la limitation de débit (300 requêtes publiques en rafale, puis
+300/min ; 120 par jeton de webhook) intervient bien avant la saturation de la file (200 en
+attente, au-delà : 429). Les leviers : `RUNNER_THREADS` (calcul des workflows, un cœur par
+thread), `DATABASE_MAX_CONNECTIONS` (requêtes simultanées), `EXECUTION_TIMEOUT_SECS`. Les
+workflows qui appellent des services externes sont limités par ces services, pas par mini8n.
+
+## Mises à jour et retour arrière
+
+En production, on déploie **les images construites par la CI**, jamais une copie de travail
+(modifications non enregistrées, dépendances locales…). Le workflow `Release` publie sur
+GitHub Container Registry, après analyse des vulnérabilités (Trivy : aucune faille critique ou
+élevée corrigeable) :
+
+- tag `vX.Y.Z` → images `ghcr.io/<compte>/mini8n/{server,web,connectors}:X.Y.Z` ;
+- branche `main` → tag `main` (préproduction).
+
+```bash
+# .env : MINI8N_REGISTRY=ghcr.io/<compte>/mini8n   MINI8N_VERSION=1.2.0
+./scripts/backup.sh                       # toujours une sauvegarde avant une mise à jour
+docker compose pull
+docker compose up -d --no-build
+```
+
+**Retour arrière** : remettre la version précédente dans `MINI8N_VERSION`, puis `pull` et
+`up -d --no-build`. Les migrations de schéma ne sont appliquées que vers l'avant : si la
+nouvelle version a modifié le schéma, restaurer aussi la sauvegarde faite juste avant
+(`./scripts/restore.sh`). Publier une version : `git tag v1.2.0 && git push origin v1.2.0`.
+
+**Dépendances** : le workflow `Audit des dépendances` vérifie, à chaque modification et chaque
+semaine, les vulnérabilités connues (RustSec via `cargo deny`, `npm audit`), les licences et
+la provenance des crates (`deny.toml` : toute exception y est justifiée). Dependabot propose
+chaque semaine les mises à jour (crates, npm, images Docker, actions GitHub).
 
 ## Développement local
 
@@ -88,6 +207,8 @@ crates/engine/          moteur Rust → wasm (workflow, nœuds, expressions, Par
 crates/server/          API Rust (axum + sqlx)
   migrations/           schéma PostgreSQL
   src/auth.rs           inscription, connexion, sessions, mot de passe
+  src/accounts.rs       mot de passe oublié, vérification d'adresse, invitations
+  src/mailer.rs         e-mails de la plateforme (SMTP_HOST…)
   src/workspaces.rs     workspaces, membres, rôles
   src/workflows.rs      stockage des workflows (version optimiste)
   src/live.rs           collaboration en direct (WebSocket : présence, sauvegardes diffusées)
@@ -102,6 +223,7 @@ crates/server/          API Rust (axum + sqlx)
   src/files.rs          fichiers du workspace
   src/integrations/     PostgreSQL / MySQL (sqlx), Oracle (connecteur), fichiers, e-mail, messageries
   src/executions.rs     historique des exécutions
+  src/metrics.rs        métriques Prometheus (/api/metrics)
   src/security.rs       anti-CSRF, limitation de débit, IP cliente
   tests/api.rs          tests d'intégration (PostgreSQL) ; tests/live.rs : WebSocket ; tests/mcp.rs : IA
 web/                    interface Svelte 5 + Vite + Tailwind 4 + shadcn-svelte
@@ -132,7 +254,18 @@ compose.yaml            orchestration
   par compte, révocation de toutes les autres sessions au changement de mot de passe.
 - Connexion : même message et même temps de réponse pour un compte inexistant ou un mauvais
   mot de passe ; limitation par IP et par compte ; blocage progressif après 5 échecs.
-- Inscriptions désactivables (`ALLOW_REGISTRATION=false`).
+- **Inscriptions fermées par défaut** (`ALLOW_REGISTRATION=false`) : le premier compte
+  (administrateur) peut toujours être créé — créez-le **avant** d'exposer le serveur (le
+  serveur le rappelle au démarrage tant qu'aucun compte n'existe), les autres personnes rejoignent un workspace sur
+  **invitation** (lien à usage unique, 7 jours, révocable). Seule une adresse **vérifiée** est
+  ajoutée directement : sinon, quiconque s'inscrirait avec l'adresse d'un collègue recevrait
+  l'accès qui lui est destiné.
+- **E-mails de la plateforme** (`SMTP_HOST`, `SMTP_FROM`… facultatifs) : mot de passe oublié
+  (lien de 30 min, à usage unique, déconnecte toutes les sessions et débloque le compte),
+  vérification d'adresse, invitations. « Mot de passe oublié » répond de la même façon que
+  l'adresse soit inscrite ou non et envoie en tâche de fond (pas de déduction des comptes) ;
+  jetons de 256 bits stockés hachés. Sans SMTP, le lien d'invitation est affiché au
+  propriétaire pour qu'il le transmette (l'adresse n'est alors pas considérée vérifiée).
 
 **API**
 - Anti-CSRF : cookie `SameSite=Strict`, en-tête `Origin` obligatoire et égal à `PUBLIC_ORIGIN`
@@ -342,6 +475,22 @@ enregistrées puis diffusées comme celles d'un membre (fusion avec les modifica
   et échantillon de chaque nœud), `get_run_result`, `get_node_output` (pagination, 30 min) ;
   `update_node`, `add_node`, `delete_node`, `connect_nodes`, `disconnect_nodes` (mêmes règles
   que l'éditeur : paramètres connus, pas de boucle) ; `list_executions`, `get_execution`.
+- **Portées** (choisies à la création du jeton) :
+  - *lecture* : consultation seulement (aucune exécution, aucune modification) ;
+  - *test* (par défaut) : exécutions en **simulation** — e-mails, messages, écritures en base,
+    fichiers, sous-workflows et appels HTTP qui modifient (méthode autre que GET) ou peuvent
+    transmettre des données (expressions `{{ }}`) sont neutralisés le temps de l'exécution ;
+    les lectures de bases n'acceptent qu'**une** instruction `SELECT`/`WITH` (ni `;`, ni bloc
+    PL/SQL, ni `INTO OUTFILE`), exécutée dans une transaction en lecture seule puis annulée.
+    Seuls les workflows **inactifs** et non appelables par d'autres (« Appelé par un
+    workflow ») peuvent être modifiés : les autres s'exécutent réellement. Les échecs de ces
+    exécutions ne déclenchent pas les workflows « Sur erreur » ;
+  - *complet* : exécutions réelles et modification de tous les workflows.
+
+  Une fonction de la base qui écrit par un autre canal (transaction autonome, `dblink`…)
+  échappe à toute transaction : pour une garantie stricte, donnez à l'identifiant un compte
+  de base sans droit d'écriture. Une réinitialisation de mot de passe et « se déconnecter de
+  tous les appareils » révoquent aussi les jetons d'IA du compte.
 - **Sécurité** : jeton personnel limité à un workspace, stocké haché (SHA-256), révocable,
   expiration au choix ; appartenance au workspace revérifiée à chaque appel ; jamais de
   cookie (pas de CSRF), `Origin` refusé s'il n'est pas celui du site (DNS rebinding) ;
@@ -415,10 +564,15 @@ Garde-fous : longueur, profondeur, nombre d'opérations et taille des résultats
 
 ## Limites actuelles / pistes
 
-- Pas encore de vérification d'e-mail ni de réinitialisation de mot de passe par e-mail.
-- Les limites de débit de l'API et les salles de collaboration sont en mémoire (une seule
-  instance de `server` ; plusieurs instances demanderaient un relais commun, ex. PostgreSQL
-  `LISTEN/NOTIFY`).
+- **Plusieurs instances de `server`** : ce qui passe par PostgreSQL est sûr — planification
+  et surveillance d'API (échéances réservées par `FOR UPDATE SKIP LOCKED` : jamais lancées
+  deux fois), webhooks, historique, sessions, reprise des exécutions orphelines (seules celles
+  qui ont dépassé `EXECUTION_TIMEOUT_SECS` sont marquées interrompues). Restent **par instance** :
+  la collaboration en direct (deux personnes sur deux instances ne se voient pas), les limites
+  de débit (multipliées par le nombre d'instances) et les données des exécutions lancées par
+  une IA (`get_node_output`). Recommandé : **une instance** redémarrée automatiquement
+  (`restart: unless-stopped`) ; au-delà, un routage persistant (par cookie ou IP) vers une
+  même instance, en attendant un relais commun (PostgreSQL `LISTEN/NOTIFY`).
 - Collaboration : les modifications des autres apparaissent à chaque sauvegarde (moins
   d'une seconde après), pas frappe par frappe ; le texte d'un même paramètre modifié en
   même temps n'est pas fusionné caractère par caractère.

@@ -171,6 +171,7 @@ async fn start(
             }),
             target: None,
             progress: None,
+            read_only: false,
         })
         .await
         .map(|_| ())

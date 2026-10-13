@@ -29,11 +29,13 @@ async fn setup(http_allow_private: bool) -> Option<Env> {
     let config = Config {
         bind: "127.0.0.1:0".parse().unwrap(),
         database_url: url,
+        database_max_connections: 10,
         public_origins: vec![ORIGIN.into()],
         cookie_secure: CookieSecure::Always,
         trust_proxy: false,
         session_ttl_hours: 1,
         allow_registration: true,
+        mail: None,
         http_allow_private,
         runner_threads: 2,
         execution_timeout_secs: 30,
@@ -43,6 +45,7 @@ async fn setup(http_allow_private: bool) -> Option<Env> {
         credentials_key: [42u8; 32],
         connectors_url: None,
         connectors_token: None,
+        metrics_token: None,
     };
     let state = AppState::new(db, config);
     let app = app(state.clone());
@@ -685,4 +688,54 @@ async fn server_side_http_blocks_private_networks() {
         .unwrap_or_default()
         .to_string();
     assert!(err.contains("non autorisée"), "{err}");
+}
+
+/// Exécution « en cours » : récente, elle peut tourner sur une autre instance (laissée
+/// telle quelle) ; au-delà du délai maximal, elle est orpheline (marquée interrompue).
+#[tokio::test]
+async fn orphan_executions_are_recovered_without_touching_live_ones() {
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        return;
+    };
+    let db = sqlx::PgPool::connect(&url).await.unwrap();
+    mini8n_server::MIGRATOR.run(&db).await.unwrap();
+    let ws = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO workspaces (id, name) VALUES ($1, 'Instances')")
+        .bind(ws)
+        .execute(&db)
+        .await
+        .unwrap();
+    let (live, orphan) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    for (id, age) in [(live, 10.0), (orphan, 3600.0)] {
+        sqlx::query(
+            "INSERT INTO executions (id, workspace_id, workflow_name, trigger_kind, status, started_at)
+             VALUES ($1, $2, 'w', 'schedule', 'running', now() - make_interval(secs => $3))",
+        )
+        .bind(id)
+        .bind(ws)
+        .bind(age)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+    mini8n_server::runner::recover_interrupted(&db, 300)
+        .await
+        .unwrap();
+    let status = |id| {
+        let db = db.clone();
+        async move {
+            sqlx::query_scalar::<_, String>("SELECT status FROM executions WHERE id = $1")
+                .bind(id)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(status(live).await, "running");
+    assert_eq!(status(orphan).await, "error");
+    sqlx::query("DELETE FROM workspaces WHERE id = $1")
+        .bind(ws)
+        .execute(&db)
+        .await
+        .unwrap();
 }
