@@ -94,13 +94,13 @@ pub async fn verify_password(
 // Sessions
 // ---------------------------------------------------------------------------
 
-fn new_token() -> AppResult<String> {
+pub(crate) fn new_token() -> AppResult<String> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(AppError::internal)?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn token_hash(token: &str) -> Vec<u8> {
+pub(crate) fn token_hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 

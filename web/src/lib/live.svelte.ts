@@ -16,6 +16,8 @@ export interface Peer {
 	user: string;
 	name: string;
 	color: number;
+	/** IA connectée par MCP (Claude…). */
+	agent?: boolean;
 	cursor: Point | null;
 	selection: string[];
 	focus: string | null;

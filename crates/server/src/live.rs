@@ -202,7 +202,8 @@ struct Peer {
     user: Uuid,
     name: String,
     color: u8,
-    tx: mpsc::Sender<Out>,
+    /// `None` : participant sans connexion (IA connectée par MCP).
+    tx: Option<mpsc::Sender<Out>>,
     presence: Presence,
 }
 
@@ -212,6 +213,9 @@ struct PeerView<'a> {
     user: Uuid,
     name: &'a str,
     color: u8,
+    /// IA connectée par MCP.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    agent: bool,
     #[serde(flatten)]
     presence: &'a Presence,
 }
@@ -223,6 +227,7 @@ impl Peer {
             user: self.user,
             name: &self.name,
             color: self.color,
+            agent: self.tx.is_none(),
             presence: &self.presence,
         }
     }
@@ -243,7 +248,10 @@ impl Room {
             if Some(*id) == except {
                 return true;
             }
-            match peer.tx.try_send(Out::Text(text.clone())) {
+            let Some(tx) = &peer.tx else {
+                return true;
+            };
+            match tx.try_send(Out::Text(text.clone())) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Full(_)) => transient,
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
@@ -276,6 +284,58 @@ impl Hub {
         user: &AuthUser,
         tx: mpsc::Sender<Out>,
     ) -> Option<u64> {
+        self.enter(workspace, workflow, user.id, &user.name, Some(tx))
+    }
+
+    /// Une IA (jeton MCP) rejoint la salle : les membres la voient comme un participant
+    /// (nœud en cours d'examen, exécutions), sans connexion WebSocket.
+    pub fn agent_join(
+        &self,
+        workspace: Uuid,
+        workflow: Uuid,
+        user: Uuid,
+        name: &str,
+    ) -> Option<u64> {
+        self.enter(workspace, workflow, user, name, None)
+    }
+
+    /// L'IA quitte la salle.
+    pub fn agent_leave(&self, workflow: Uuid, id: u64) {
+        self.leave(workflow, id);
+    }
+
+    /// L'IA est-elle toujours dans la salle (salle non supprimée, accès non retiré) ?
+    pub fn agent_present(&self, workflow: Uuid, id: u64) -> bool {
+        self.rooms()
+            .get(&workflow)
+            .is_some_and(|r| r.peers.contains_key(&id))
+    }
+
+    /// Nœud examiné par l'IA.
+    pub fn agent_focus(&self, workflow: Uuid, id: u64, node: Option<String>) {
+        if node.as_deref().is_none_or(valid_id) {
+            self.act(workflow, id, Action::Focus { node });
+        }
+    }
+
+    /// Exécution lancée par l'IA (même format que celle d'un navigateur).
+    pub fn agent_run(&self, workflow: Uuid, id: u64, run: serde_json::Value) {
+        match serde_json::from_value::<RunState>(run) {
+            Ok(run) if run.valid() => self.act(workflow, id, Action::Run { run: Some(run) }),
+            _ => {
+                tracing::warn!(workflow_id = %workflow, "collaboration : exécution de l'IA ignorée")
+            }
+        }
+    }
+
+    fn enter(
+        &self,
+        workspace: Uuid,
+        workflow: Uuid,
+        user: Uuid,
+        name: &str,
+        tx: Option<mpsc::Sender<Out>>,
+    ) -> Option<u64> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let mut rooms = self.rooms();
         let room = rooms.entry(workflow).or_insert_with(|| Room {
@@ -291,11 +351,14 @@ impl Hub {
             .find(|c| !used.contains(c))
             .unwrap_or((room.peers.len() % COLORS as usize) as u8);
         let peers: Vec<_> = room.peers.iter().map(|(id, p)| p.view(*id)).collect();
-        let welcome = text(json!({ "t": "welcome", "you": id, "color": color, "peers": peers }));
-        tx.try_send(Out::Text(welcome)).ok()?;
+        if let Some(tx) = &tx {
+            let welcome =
+                text(json!({ "t": "welcome", "you": id, "color": color, "peers": peers }));
+            tx.try_send(Out::Text(welcome)).ok()?;
+        }
         let peer = Peer {
-            user: user.id,
-            name: user.name.clone(),
+            user,
+            name: name.to_string(),
             color,
             tx,
             presence: Presence::default(),
@@ -375,10 +438,8 @@ impl Hub {
     /// Workflow supprimé : tous ses clients sont déconnectés.
     pub fn deleted(&self, workflow: Uuid) {
         if let Some(room) = self.rooms().remove(&workflow) {
-            for peer in room.peers.values() {
-                let _ = peer
-                    .tx
-                    .try_send(Out::Close(close::GONE, "Workflow supprimé"));
+            for tx in room.peers.values().filter_map(|p| p.tx.as_ref()) {
+                let _ = tx.try_send(Out::Close(close::GONE, "Workflow supprimé"));
             }
         }
     }
@@ -395,9 +456,9 @@ impl Hub {
                 .collect();
             for id in gone {
                 if let Some(peer) = room.peers.remove(&id) {
-                    let _ = peer
-                        .tx
-                        .try_send(Out::Close(close::FORBIDDEN, "Accès retiré"));
+                    if let Some(tx) = &peer.tx {
+                        let _ = tx.try_send(Out::Close(close::FORBIDDEN, "Accès retiré"));
+                    }
                     room.send(text(json!({ "t": "leave", "id": id })), None, false);
                 }
             }

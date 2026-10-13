@@ -54,7 +54,7 @@ pub(crate) fn valid_id(s: &str) -> bool {
 }
 
 /// Contrôle la forme et la taille d'une définition de workflow.
-fn check_definition(def: &Value) -> AppResult<()> {
+pub(crate) fn check_definition(def: &Value) -> AppResult<()> {
     let bad = |m: &str| Err(AppError::bad(format!("Définition invalide : {m}")));
     if serde_json::to_vec(def).map_err(AppError::internal)?.len() > MAX_DEFINITION_BYTES {
         return bad("taille maximale de 1 Mo dépassée");
@@ -116,7 +116,7 @@ pub async fn list(
     ))
 }
 
-async fn fetch(state: &AppState, ws: Uuid, id: Uuid) -> AppResult<WorkflowDoc> {
+pub(crate) async fn fetch(state: &AppState, ws: Uuid, id: Uuid) -> AppResult<WorkflowDoc> {
     sqlx::query_as("SELECT id, name, version, active, definition, updated_at FROM workflows WHERE id = $1 AND workspace_id = $2")
         .bind(id)
         .bind(ws)

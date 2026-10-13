@@ -88,7 +88,14 @@ pub struct Start {
     /// manual | schedule | webhook | form | poll | workflow | error
     pub trigger_kind: &'static str,
     pub trigger: Option<TriggerEvent>,
+    /// N'exécuter que ce nœud et ses ancêtres.
+    pub target: Option<String>,
+    /// Suivi de la progression (affichage en direct).
+    pub progress: Option<Progress>,
 }
+
+/// Progression d'une exécution : `(nœud, None)` au début, `(nœud, Some(résultat))` à la fin.
+pub type Progress = Arc<dyn Fn(&str, Option<&mini8n_engine::NodeResult>) + Send + Sync>;
 
 /// Résultat final d'une exécution.
 #[derive(Debug, Clone)]
@@ -98,6 +105,8 @@ pub struct Finished {
     pub error: Option<String>,
     /// Sortie du workflow (lignes JSON, 1000 max.).
     pub output: Option<Value>,
+    /// Rapport complet, avec les données produites par chaque nœud (Parquet).
+    pub report: Option<Arc<RunReport>>,
 }
 
 #[derive(Clone)]
@@ -110,6 +119,8 @@ struct Ctx {
 struct Job {
     workflow: Workflow,
     trigger: Option<TriggerEvent>,
+    target: Option<String>,
+    progress: Option<Progress>,
     ctx: Ctx,
     reply: oneshot::Sender<RunReport>,
 }
@@ -195,6 +206,8 @@ impl Runner {
         let job = Job {
             workflow: workflow.clone(),
             trigger: s.trigger,
+            target: s.target,
+            progress: s.progress,
             ctx: Ctx {
                 workspace_id: s.workspace_id,
                 execution_id: id,
@@ -234,7 +247,10 @@ impl Runner {
                     )
                     .await;
             }
-            let _ = done_tx.send(summary.finished(id));
+            let _ = done_tx.send(Finished {
+                report: Some(Arc::new(report)),
+                ..summary.finished(id)
+            });
         });
         Ok((id, done_rx))
     }
@@ -288,6 +304,8 @@ impl Runner {
                 definition,
                 trigger_kind: "error",
                 trigger: Some(TriggerEvent { node_id, data }),
+                target: None,
+                progress: None,
             };
             if let Err(e) = self.start(start).await {
                 tracing::warn!(%e, workflow_id = %wf_id, "déclencheur d'erreur non lancé");
@@ -340,9 +358,10 @@ fn worker(inner: Arc<Inner>, rx: Arc<Mutex<mpsc::Receiver<Job>>>) {
         let host = ServerHost {
             inner: inner.clone(),
             ctx: job.ctx.clone(),
+            progress: job.progress,
         };
         let opts = RunOptions {
-            target: None,
+            target: job.target.as_deref(),
             trigger: job.trigger,
         };
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -368,6 +387,7 @@ fn worker(inner: Arc<Inner>, rx: Arc<Mutex<mpsc::Receiver<Job>>>) {
 struct ServerHost {
     inner: Arc<Inner>,
     ctx: Ctx,
+    progress: Option<Progress>,
 }
 
 fn engine_err(msg: impl Into<String>) -> EngineError {
@@ -375,6 +395,18 @@ fn engine_err(msg: impl Into<String>) -> EngineError {
 }
 
 impl Host for ServerHost {
+    fn node_started(&self, node_id: &str) {
+        if let Some(p) = &self.progress {
+            p(node_id, None);
+        }
+    }
+
+    fn node_finished(&self, node_id: &str, result: &mini8n_engine::NodeResult) {
+        if let Some(p) = &self.progress {
+            p(node_id, Some(result));
+        }
+    }
+
     fn integration<'a>(
         &'a self,
         node: &'a mini8n_engine::Node,
@@ -481,6 +513,7 @@ impl Host for ServerHost {
                     execution_id: child,
                     depth: self.ctx.depth + 1,
                 },
+                progress: None,
             };
             let opts = RunOptions {
                 target: None,
@@ -556,6 +589,7 @@ impl Summary {
             ok: self.ok,
             error: self.error.clone(),
             output: self.output.clone(),
+            report: None,
         }
     }
 }

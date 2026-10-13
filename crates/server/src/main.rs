@@ -3,7 +3,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
-use mini8n_server::{AppState, Config, MIGRATOR, app, auth, runner, scheduler};
+use mini8n_server::{AppState, Config, MIGRATOR, app, auth, mcp, runner, scheduler};
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
@@ -96,6 +96,7 @@ async fn main() {
     let bind = config.bind;
     let state = AppState::new(db, config);
     scheduler::spawn(state.runner.clone());
+    mcp::spawn_sweeper(state.clone());
     {
         let db = state.db.clone();
         tokio::spawn(async move {

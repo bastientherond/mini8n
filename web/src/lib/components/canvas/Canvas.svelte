@@ -2,6 +2,7 @@
 	// Canevas de workflow fait maison : nœuds positionnés en HTML, liens en SVG routés
 	// autour des nœuds (voir $lib/canvas/router.ts), interactions à la souris, au doigt
 	// et au clavier.
+	import Bot from '@lucide/svelte/icons/bot';
 	import Pencil from '@lucide/svelte/icons/pencil';
 	import Plus from '@lucide/svelte/icons/plus';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
@@ -966,7 +967,7 @@
 					aria-label="Aller à la position de {peerName(p)}"
 					onclick={() => follow(p)}
 				>
-					{initials(p.name)}
+					{#if p.agent}<Bot class="size-4" />{:else}{initials(p.name)}{/if}
 				</button>
 			{/each}
 		</div>

@@ -39,6 +39,15 @@ export interface WorkflowSummary {
 	updatedBy: string | null;
 }
 
+/** Jeton d'accès d'une IA (serveur MCP). */
+export interface ApiToken {
+	id: string;
+	name: string;
+	createdAt: string;
+	lastUsedAt: string | null;
+	expiresAt: string | null;
+}
+
 export interface WorkflowDoc {
 	id: string;
 	name: string;
@@ -248,6 +257,11 @@ export const api = {
 		return request<ExecutionSummary[]>('GET', `${ws(id)}/executions${qs ? `?${qs}` : ''}`);
 	},
 	execution: (id: string, eid: string) => request<ExecutionDetail>('GET', `${ws(id)}/executions/${encodeURIComponent(eid)}`),
+
+	tokens: (id: string) => request<ApiToken[]>('GET', `${ws(id)}/tokens`),
+	createToken: (id: string, name: string, expiresInDays: number | null) =>
+		request<ApiToken & { token: string }>('POST', `${ws(id)}/tokens`, { name, expiresInDays }),
+	deleteToken: (id: string, tid: string) => request<void>('DELETE', `${ws(id)}/tokens/${encodeURIComponent(tid)}`),
 
 	credentialTypes: () => request<CredentialKind[]>('GET', '/credential-types'),
 	credentials: (id: string) => request<CredentialInfo[]>('GET', `${ws(id)}/credentials`),

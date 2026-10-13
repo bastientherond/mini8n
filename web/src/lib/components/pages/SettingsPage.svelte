@@ -7,6 +7,7 @@
 	import { api, errorMessage } from '$lib/api';
 	import { router } from '$lib/router.svelte';
 	import { session } from '$lib/session.svelte';
+	import AiAccess from './AiAccess.svelte';
 	import Page from './Page.svelte';
 
 	const ws = $derived(session.current!);
@@ -81,6 +82,8 @@
 				<p class="text-muted-foreground mt-3 font-mono text-xs">ID : {ws.id}</p>
 			</Card.Content>
 		</Card.Root>
+
+		<AiAccess workspaceId={ws.id} />
 
 		{#if isOwner}
 			<Card.Root class="border-destructive/40">

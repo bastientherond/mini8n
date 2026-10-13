@@ -106,8 +106,11 @@ pub async fn require_same_origin(
 ) -> Response {
     // Les webhooks sont appelés par des services tiers (sans en-tête Origin) :
     // ils sont protégés par leur jeton secret, leur secret facultatif et la limitation de débit.
+    // Le serveur MCP n'accepte qu'un jeton `Authorization` (jamais envoyé seul par un
+    // navigateur) et vérifie lui-même l'origine si elle est présente.
     if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS)
         || req.uri().path().starts_with("/hooks/")
+        || req.uri().path() == "/mcp"
     {
         return next.run(req).await;
     }

@@ -9,11 +9,13 @@ pub mod executions;
 pub mod files;
 pub mod integrations;
 pub mod live;
+pub mod mcp;
 pub mod net;
 pub mod runner;
 pub mod schedule;
 pub mod scheduler;
 pub mod security;
+pub mod tokens;
 pub mod triggers;
 pub mod validate;
 pub mod workflows;
@@ -52,6 +54,8 @@ pub struct Limits {
     pub public_ip: RateLimiter,
     /// Connexions de collaboration en direct : par utilisateur.
     pub live: RateLimiter,
+    /// Appels MCP des IA : par jeton.
+    pub mcp: RateLimiter,
 }
 
 impl Default for Limits {
@@ -64,6 +68,7 @@ impl Default for Limits {
             hooks: RateLimiter::new(120, 120),
             public_ip: RateLimiter::new(300, 300),
             live: RateLimiter::new(30, 30),
+            mcp: RateLimiter::new(120, 120),
         }
     }
 }
@@ -81,6 +86,8 @@ pub struct AppState {
     pub vault: Arc<crypto::Vault>,
     /// Collaboration en direct (curseurs, sélections, sauvegardes diffusées).
     pub live: Arc<live::Hub>,
+    /// Serveur MCP : exécutions des IA et leur présence dans l'éditeur.
+    pub mcp: Arc<mcp::McpState>,
 }
 
 impl AppState {
@@ -96,6 +103,7 @@ impl AppState {
             limits: Arc::new(Limits::default()),
             hash_permits: Arc::new(Semaphore::new(4)),
             live: Arc::new(live::Hub::default()),
+            mcp: Arc::new(mcp::McpState::default()),
         }
     }
 }
@@ -187,6 +195,13 @@ pub fn app(state: AppState) -> Router {
             "/workspaces/{ws}/integrations/run",
             post(integrations::run_endpoint).layer(DefaultBodyLimit::max(40 * 1024 * 1024)),
         )
+        .route(
+            "/workspaces/{ws}/tokens",
+            get(tokens::list).post(tokens::create),
+        )
+        .route("/workspaces/{ws}/tokens/{id}", delete(tokens::delete))
+        // IA connectées (Claude…) : authentifiées par jeton, jamais par cookie.
+        .route("/mcp", post(mcp::endpoint).get(mcp::stream))
         .route("/workspaces/{ws}/executions", get(executions::list))
         .route("/workspaces/{ws}/executions/{id}", get(executions::get))
         .merge(public)
