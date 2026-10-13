@@ -9,7 +9,7 @@
 	import { onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import { layered } from '$lib/canvas/layout';
-	import { type Point, type Rect, crossings, labelPoint, pathFor, routeEdges } from '$lib/canvas/router';
+	import { type Point, type Rect, crossings, ownPoint, pathFor, routeEdges, trunkPoint } from '$lib/canvas/router';
 	import { Viewport, boundsOf } from '$lib/canvas/viewport.svelte';
 	import { formatCount } from '$lib/icons';
 	import { type Peer, live, peerColor } from '$lib/live.svelte';
@@ -116,8 +116,15 @@
 	});
 
 	const edgeViews = $derived.by(() => {
-		// Liens qui partagent un tronc : une seule étiquette au même endroit.
-		const taken = new Set<string>();
+		// Les liens qui partent d'un même nœud transportent les mêmes lignes : une seule
+		// étiquette, sur leur tronc commun. Les boutons d'un lien vont sur sa portion propre.
+		const bySource = new Map<string, Point[][]>();
+		for (const e of wf.edges) {
+			const points = routed.routes.get(e.id);
+			if (points) bySource.set(e.source, [...(bySource.get(e.source) ?? []), points]);
+		}
+		const others = (points: Point[]) => [...routed.routes.values()].filter((r) => r !== points);
+		const counted = new Set<string>();
 		return wf.edges.flatMap((e) => {
 			const points = routed.routes.get(e.id);
 			if (!points) return [];
@@ -126,19 +133,21 @@
 			const flowed = source?.status === 'success' && !!target && target.status !== 'skipped';
 			// Données en route : la source a fini, la cible attend ou s'exécute.
 			const flowing = wf.runningIds.has(e.target) && !wf.runningIds.has(e.source);
-			const label = labelPoint(points);
-			const key = `${Math.round(label.x / 6)}:${Math.round(label.y / 6)}`;
-			const duplicate = taken.has(key);
-			taken.add(key);
+			const siblings = bySource.get(e.source) ?? [points];
+			const label = ownPoint(points, others(points));
+			const rowsAt = siblings.length > 1 ? trunkPoint(siblings) : label;
+			const first = !counted.has(e.source);
+			counted.add(e.source);
 			return [
 				{
 					edge: e,
 					d: pathFor(points, routed.hops.get(e.id)),
 					end: points[points.length - 1],
 					label,
+					rowsAt,
 					rows: flowed ? source.rows : null,
 					flowing,
-					showRows: flowed && !duplicate,
+					showRows: flowed && first,
 				},
 			];
 		});
@@ -804,10 +813,22 @@
 			{/if}
 		</svg>
 
-		<!-- Étiquettes des liens : lignes transmises, suppression -->
+		<!-- Lignes transmises : une étiquette par nœud source -->
+		{#each edgeViews as v (v.edge.id)}
+			{#if v.showRows && v.rows !== null}
+				<span
+					class="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap rounded-full border border-emerald-500/30 bg-emerald-50 px-1.5 py-px text-[10px] font-medium text-emerald-700 tabular-nums dark:bg-emerald-950 dark:text-emerald-300"
+					style="left: {v.rowsAt.x}px; top: {v.rowsAt.y}px;"
+				>
+					{formatCount(v.rows)} ligne{v.rows > 1 ? 's' : ''}
+				</span>
+			{/if}
+		{/each}
+
+		<!-- Boutons d'un lien (survol, sélection) : insertion, suppression -->
 		{#each edgeViews as v (v.edge.id)}
 			{@const active = v.edge.selected || hoveredEdge === v.edge.id || picker?.edge === v.edge.id}
-			{#if active || v.showRows}
+			{#if active}
 				<div
 					class="absolute flex -translate-x-1/2 -translate-y-1/2 items-center gap-1"
 					style="left: {v.label.x}px; top: {v.label.y}px;"
@@ -816,37 +837,28 @@
 					onpointerenter={() => enterEdge(v.edge.id)}
 					onpointerleave={(e) => leaveEdge(e, v.edge.id)}
 				>
-					{#if v.showRows && v.rows !== null}
-						<span
-							class="whitespace-nowrap rounded-full border border-emerald-500/30 bg-emerald-50 px-1.5 py-px text-[10px] font-medium text-emerald-700 tabular-nums dark:bg-emerald-950 dark:text-emerald-300"
-						>
-							{formatCount(v.rows)} ligne{v.rows > 1 ? 's' : ''}
-						</span>
-					{/if}
-					{#if active}
-						<button
-							type="button"
-							class="bg-card text-muted-foreground hover:text-primary hover:border-primary/40 flex size-6 items-center justify-center rounded-md border shadow-sm"
-							title="Insérer un nœud ici"
-							aria-label="Insérer un nœud sur ce lien"
-							data-canvas-ui
-							onpointerdown={(e) => e.button === 0 && openPicker(e, v.edge.id, v.label)}
-							onclick={(e) => openPicker(e, v.edge.id, v.label)}
-						>
-							<Plus class="size-3.5" />
-						</button>
-						<button
-							type="button"
-							class="bg-card text-muted-foreground hover:text-destructive hover:border-destructive/40 flex size-6 items-center justify-center rounded-md border shadow-sm"
-							title="Supprimer le lien"
-							aria-label="Supprimer le lien"
-							data-canvas-ui
-							onpointerdown={(e) => e.button === 0 && deleteEdge(e, v.edge.id)}
-							onclick={(e) => deleteEdge(e, v.edge.id)}
-						>
-							<Trash2 class="size-3.5" />
-						</button>
-					{/if}
+					<button
+						type="button"
+						class="bg-card text-muted-foreground hover:text-primary hover:border-primary/40 flex size-6 items-center justify-center rounded-md border shadow-sm"
+						title="Insérer un nœud ici"
+						aria-label="Insérer un nœud sur ce lien"
+						data-canvas-ui
+						onpointerdown={(e) => e.button === 0 && openPicker(e, v.edge.id, v.label)}
+						onclick={(e) => openPicker(e, v.edge.id, v.label)}
+					>
+						<Plus class="size-3.5" />
+					</button>
+					<button
+						type="button"
+						class="bg-card text-muted-foreground hover:text-destructive hover:border-destructive/40 flex size-6 items-center justify-center rounded-md border shadow-sm"
+						title="Supprimer le lien"
+						aria-label="Supprimer le lien"
+						data-canvas-ui
+						onpointerdown={(e) => e.button === 0 && deleteEdge(e, v.edge.id)}
+						onclick={(e) => deleteEdge(e, v.edge.id)}
+					>
+						<Trash2 class="size-3.5" />
+					</button>
 				</div>
 			{/if}
 		{/each}

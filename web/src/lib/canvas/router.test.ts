@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { crossesRect, crossings, pathFor, routeEdges, type Point, type Rect } from './router.ts';
+import { crossesRect, crossings, ownPoint, pathFor, routeEdges, trunkPoint, type Point, type Rect } from './router.ts';
 
 const W = 240;
 const H = 92;
@@ -126,4 +126,28 @@ test('deux liens vers les entrées A et B : pas de croisement', () => {
 		[a, b, m],
 	);
 	assert.equal(crossings(routes).size, 0, JSON.stringify([...routes]));
+});
+
+test('étiquettes : un tronc commun, des boutons propres à chaque lien', () => {
+	// Un nœud qui alimente trois nœuds empilés : les liens partagent le départ.
+	const src = node(0, 300);
+	const targets = [node(500, 0), node(500, 300), node(500, 600)];
+	const routes = routeEdges(
+		targets.map((t, i) => ({ id: `e${i}`, from: out(src), to: inp(t) })),
+		[src, ...targets],
+	);
+	const all = [...routes.values()];
+	const trunk = trunkPoint(all);
+	assert.equal(trunk.y, out(src).y, 'sur le tronc, à la hauteur du port');
+	assert.ok(trunk.x > out(src).x && trunk.x < inp(targets[0]).x);
+
+	const points = all.map((r, i) => ownPoint(r, all.filter((_, j) => j !== i)));
+	const keys = new Set(points.map((p) => `${Math.round(p.x)}:${Math.round(p.y)}`));
+	assert.equal(keys.size, 3, `points distincts : ${JSON.stringify(points)}`);
+	// Chaque point est sur la portion propre au lien (après l'embranchement).
+	points.forEach((p, i) => assert.ok(p.x > trunk.x, `lien ${i} : ${JSON.stringify(p)}`));
+
+	// Un lien seul garde son étiquette au milieu.
+	const solo = routeEdges([{ id: 's', from: out(src), to: inp(node(500, 300)) }], [src]).get('s')!;
+	assert.deepEqual(ownPoint(solo, []), { x: (out(src).x + 500) / 2, y: out(src).y });
 });

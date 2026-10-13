@@ -521,6 +521,66 @@ export function labelPoint(points: Point[]): Point {
 	return best;
 }
 
+/** Intervalles de [lo, hi] non couverts par `cover` (intervalles quelconques). */
+function subtract(lo: number, hi: number, cover: [number, number][]): [number, number][] {
+	let parts: [number, number][] = [[lo, hi]];
+	for (const [c1, c2] of cover) {
+		parts = parts.flatMap(([p1, p2]): [number, number][] => {
+			if (c2 <= p1 || c1 >= p2) return [[p1, p2]];
+			const keep: [number, number][] = [];
+			if (c1 > p1) keep.push([p1, c1]);
+			if (c2 < p2) keep.push([c2, p2]);
+			return keep;
+		});
+	}
+	return parts;
+}
+
+/**
+ * Point propre à un lien : milieu de sa plus longue portion qui n'est pas superposée à un
+ * autre lien (après l'embranchement d'un tronc commun, par exemple). Les portions
+ * horizontales sont préférées (les étiquettes sont larges). À défaut : `labelPoint`.
+ */
+export function ownPoint(points: Point[], others: Point[][]): Point {
+	let best: Point | null = null;
+	let bestScore = 0;
+	for (let k = 0; k < points.length - 1; k++) {
+		const a = points[k];
+		const b = points[k + 1];
+		const horizontal = Math.abs(a.y - b.y) < 0.01;
+		const [lo, hi] = horizontal ? [Math.min(a.x, b.x), Math.max(a.x, b.x)] : [Math.min(a.y, b.y), Math.max(a.y, b.y)];
+		const cover: [number, number][] = [];
+		for (const other of others) {
+			for (let j = 0; j < other.length - 1; j++) {
+				const c = other[j];
+				const d = other[j + 1];
+				if (horizontal && Math.abs(c.y - d.y) < 0.01 && Math.abs(c.y - a.y) < 1) cover.push([Math.min(c.x, d.x), Math.max(c.x, d.x)]);
+				if (!horizontal && Math.abs(c.x - d.x) < 0.01 && Math.abs(c.x - a.x) < 1) cover.push([Math.min(c.y, d.y), Math.max(c.y, d.y)]);
+			}
+		}
+		for (const [p1, p2] of subtract(lo, hi, cover)) {
+			const score = (p2 - p1) * (horizontal ? 1 : 0.6);
+			if (score > bestScore) {
+				bestScore = score;
+				const mid = (p1 + p2) / 2;
+				best = horizontal ? { x: mid, y: a.y } : { x: a.x, y: mid };
+			}
+		}
+	}
+	return bestScore >= 1 && best ? best : labelPoint(points);
+}
+
+/**
+ * Point du tronc commun à plusieurs liens partant du même port : milieu du plus court
+ * premier segment (avant le premier embranchement).
+ */
+export function trunkPoint(routes: Point[][]): Point {
+	const firsts = routes.filter((r) => r.length >= 2).map((r) => [r[0], r[1]] as const);
+	if (firsts.length === 0) return routes[0]?.[0] ?? { x: 0, y: 0 };
+	const [a, b] = firsts.reduce((m, s) => (Math.hypot(s[1].x - s[0].x, s[1].y - s[0].y) < Math.hypot(m[1].x - m[0].x, m[1].y - m[0].y) ? s : m));
+	return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
 /** Le segment [a, b] traverse-t-il l'intérieur du rectangle ? (tests) */
 export function crossesRect(a: Point, b: Point, r: Rect): boolean {
 	const x1 = Math.min(a.x, b.x);
