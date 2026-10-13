@@ -1,7 +1,6 @@
-// État de l'éditeur : graphe Svelte Flow, catalogue des nœuds, résultats d'exécution
-// et synchronisation avec le serveur (workflows du workspace courant).
+// État de l'éditeur : graphe (nœuds et liens du canevas), catalogue des nœuds,
+// résultats d'exécution et synchronisation avec le serveur.
 
-import type { Edge, Node, XYPosition } from '@xyflow/svelte';
 import { toast } from 'svelte-sonner';
 import { ApiError, api, errorMessage, type TriggerInfo, type WorkflowDoc, type WorkflowSummary } from './api';
 import { engine } from './engine/client';
@@ -16,7 +15,36 @@ export type StepData = {
 	disabled?: boolean;
 };
 
-export type StepNode = Node<StepData, 'step'>;
+export interface XYPosition {
+	x: number;
+	y: number;
+}
+
+export interface StepNode {
+	id: string;
+	type?: 'step';
+	position: XYPosition;
+	data: StepData;
+	selected?: boolean;
+}
+
+export interface Edge {
+	id: string;
+	source: string;
+	target: string;
+	sourceHandle?: string | null;
+	/** Entrée de la cible : `in-0`, `in-1`… */
+	targetHandle?: string | null;
+	selected?: boolean;
+}
+
+/** État du graphe mémorisé pour annuler / rétablir. */
+interface GraphState {
+	nodes: StepNode[];
+	edges: Edge[];
+}
+
+const HISTORY = 60;
 
 export interface SavedWorkflow {
 	version: 1;
@@ -110,6 +138,7 @@ class WorkflowState {
 			selected: select,
 			data: { kind, name, params: this.withTokens(spec, this.defaults(spec)) },
 		};
+		this.checkpoint();
 		const others = select ? this.nodes.map((n) => (n.selected ? { ...n, selected: false } : n)) : this.nodes;
 		this.nodes = [...others, node];
 		return node.id;
@@ -126,8 +155,124 @@ class WorkflowState {
 	}
 
 	removeNode(id: string) {
+		this.checkpoint();
 		this.nodes = this.nodes.filter((n) => n.id !== id);
 		this.edges = this.edges.filter((e) => e.source !== id && e.target !== id);
+	}
+
+	// --- Graphe : sélection, liens, annulation ------------------------------
+
+	private undoStack: GraphState[] = [];
+	private redoStack: GraphState[] = [];
+	canUndo = $state(false);
+	canRedo = $state(false);
+
+	private graphState(): GraphState {
+		return {
+			nodes: this.nodes.map((n) => ({ ...n, selected: false })),
+			edges: this.edges.map((e) => ({ ...e, selected: false })),
+		};
+	}
+
+	/** Mémorise l'état actuel avant une modification du graphe. */
+	checkpoint() {
+		this.undoStack.push(this.graphState());
+		if (this.undoStack.length > HISTORY) this.undoStack.shift();
+		this.redoStack = [];
+		this.canUndo = true;
+		this.canRedo = false;
+	}
+
+	private restore(from: GraphState[], to: GraphState[]) {
+		const state = from.pop();
+		if (!state) return;
+		to.push(this.graphState());
+		this.nodes = state.nodes;
+		this.edges = state.edges;
+		if (this.openNodeId && !state.nodes.some((n) => n.id === this.openNodeId)) this.openNodeId = null;
+		this.canUndo = this.undoStack.length > 0;
+		this.canRedo = this.redoStack.length > 0;
+	}
+
+	undo() {
+		this.restore(this.undoStack, this.redoStack);
+	}
+
+	redo() {
+		this.restore(this.redoStack, this.undoStack);
+	}
+
+	private resetHistory() {
+		this.undoStack = [];
+		this.redoStack = [];
+		this.canUndo = false;
+		this.canRedo = false;
+	}
+
+	/** Sélection : nœuds et liens (les autres sont désélectionnés). */
+	setSelection(nodeIds: Iterable<string>, edgeIds: Iterable<string> = []) {
+		const ns = new Set(nodeIds);
+		const es = new Set(edgeIds);
+		this.nodes = this.nodes.map((n) => (!!n.selected === ns.has(n.id) ? n : { ...n, selected: ns.has(n.id) }));
+		this.edges = this.edges.map((e) => (!!e.selected === es.has(e.id) ? e : { ...e, selected: es.has(e.id) }));
+	}
+
+	/** Déplace des nœuds (positions absolues). */
+	moveNodes(positions: Map<string, XYPosition>) {
+		this.nodes = this.nodes.map((n) => {
+			const p = positions.get(n.id);
+			return p && (p.x !== n.position.x || p.y !== n.position.y) ? { ...n, position: p } : n;
+		});
+	}
+
+	/** Le lien source → cible créerait-il une boucle ? */
+	private createsCycle(source: string, target: string): boolean {
+		const stack = [target];
+		const seen = new Set<string>();
+		while (stack.length) {
+			const id = stack.pop()!;
+			if (id === source) return true;
+			if (seen.has(id)) continue;
+			seen.add(id);
+			for (const e of this.edges) if (e.source === id) stack.push(e.target);
+		}
+		return false;
+	}
+
+	/** Relie la sortie de `source` à l'entrée `input` de `target`. Retourne une erreur éventuelle. */
+	connect(source: string, target: string, input = 0): string | null {
+		if (source === target) return 'Un nœud ne peut pas être relié à lui-même.';
+		const spec = this.spec(this.nodes.find((n) => n.id === target)?.data.kind ?? '');
+		if (!spec || spec.inputs.length === 0) return 'Ce nœud n’a pas d’entrée.';
+		if (input >= spec.inputs.length) input = 0;
+		const handle = inputHandle(input);
+		if (this.edges.some((e) => e.source === source && e.target === target && (e.targetHandle ?? inputHandle(0)) === handle)) {
+			return 'Ces nœuds sont déjà reliés.';
+		}
+		if (this.createsCycle(source, target)) return 'Ce lien créerait une boucle.';
+		this.checkpoint();
+		this.edges = [
+			...this.edges.map((e) => (e.selected ? { ...e, selected: false } : e)),
+			{ id: `e-${uid()}`, source, target, sourceHandle: 'out', targetHandle: handle },
+		];
+		return null;
+	}
+
+	/** Supprime les nœuds et liens sélectionnés. */
+	deleteSelection(): number {
+		const nodes = new Set(this.nodes.filter((n) => n.selected).map((n) => n.id));
+		const edges = this.edges.filter((e) => e.selected || nodes.has(e.source) || nodes.has(e.target));
+		if (nodes.size === 0 && edges.length === 0) return 0;
+		this.checkpoint();
+		const gone = new Set(edges.map((e) => e.id));
+		this.nodes = this.nodes.filter((n) => !nodes.has(n.id));
+		this.edges = this.edges.filter((e) => !gone.has(e.id));
+		return nodes.size + gone.size;
+	}
+
+	removeEdge(id: string) {
+		this.checkpoint();
+		this.edges = this.edges.filter((e) => e.id !== id);
 	}
 
 	duplicateNode(id: string) {
@@ -204,6 +349,7 @@ class WorkflowState {
 		this.name = saved.name;
 		this.nodes = saved.nodes.map((n) => ({ id: n.id, type: 'step', position: n.position, data: n.data }));
 		this.edges = saved.edges.map((e) => ({ ...e, sourceHandle: 'out', targetHandle: e.targetHandle ?? inputHandle(0) }));
+		this.resetHistory();
 		this.results = {};
 		this.data = {};
 		this.lastRun = null;

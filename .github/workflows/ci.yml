@@ -68,6 +68,7 @@ jobs:
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
           npx svelte-check --tsconfig ./tsconfig.app.json --fail-on-warnings
+          npm test
           npx vite build
 
   connectors:

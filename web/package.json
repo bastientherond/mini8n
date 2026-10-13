@@ -9,7 +9,8 @@
     "dev": "npm run wasm && vite",
     "build": "npm run wasm && vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json"
+    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
+    "test": "node --test src/lib/canvas/*.test.ts"
   },
   "devDependencies": {
     "@fontsource-variable/inter": "^5.3.0",
@@ -42,7 +43,6 @@
     "@codemirror/lint": "^6.9.7",
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.14",
-    "@lezer/highlight": "^1.2.5",
-    "@xyflow/svelte": "^1.7.0"
+    "@lezer/highlight": "^1.2.5"
   }
 }

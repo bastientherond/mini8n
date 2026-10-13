@@ -1,21 +1,9 @@
 <script lang="ts">
-	import {
-		Background,
-		BackgroundVariant,
-		Controls,
-		MiniMap,
-		SvelteFlow,
-		useSvelteFlow,
-		type Connection,
-		type Edge,
-		type NodeTypes,
-	} from '@xyflow/svelte';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Plus from '@lucide/svelte/icons/plus';
 	import Zap from '@lucide/svelte/icons/zap';
 	import { categoryAccent, iconFor } from '$lib/icons';
 	import { cn } from '$lib/utils';
-	import { mode } from 'mode-watcher';
 	import { onMount, untrack } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import { errorMessage } from '$lib/api';
@@ -24,14 +12,13 @@
 	import EditorToolbar from './EditorToolbar.svelte';
 	import NodeDetails from './NodeDetails.svelte';
 	import Palette from './Palette.svelte';
-	import StepNode from './StepNode.svelte';
+	import Canvas from './canvas/Canvas.svelte';
+	import { Viewport } from '$lib/canvas/viewport.svelte';
 
 	let { workspaceId, workflowId }: { workspaceId: string; workflowId: string } = $props();
 
-	const nodeTypes: NodeTypes = { step: StepNode };
-	const { screenToFlowPosition, fitView } = useSvelteFlow();
-
-	let canvas: HTMLDivElement | undefined = $state();
+	const viewport = new Viewport();
+	let canvas: Canvas | undefined = $state();
 
 	const PALETTE_KEY = 'mini8n.paletteOpen';
 	let paletteOpen = $state(readPaletteOpen());
@@ -56,7 +43,7 @@
 	/** Raccourcis pour démarrer un workflow vide. */
 	const starters = ['trigger_manual', 'trigger_webhook', 'trigger_schedule', 'trigger_form'];
 
-	const fit = () => setTimeout(() => fitView({ padding: 0.2 }), 50);
+	const fit = () => setTimeout(() => canvas?.fit(), 50);
 
 	// Ouvre le workflow désigné par l'URL.
 	$effect(() => {
@@ -87,10 +74,7 @@
 	});
 
 	function addAtCenter(kind: string) {
-		const rect = canvas?.getBoundingClientRect();
-		const center = rect
-			? screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 })
-			: { x: 0, y: 0 };
+		const center = canvas?.center() ?? { x: 0, y: 0 };
 		const jitter = () => Math.round((Math.random() - 0.5) * 60);
 		const id = wf.addNode(kind, { x: center.x - 112 + jitter(), y: center.y - 40 + jitter() });
 		if (id) wf.openNodeId = id;
@@ -105,13 +89,9 @@
 		event.preventDefault();
 		const kind = event.dataTransfer?.getData('application/mini8n');
 		if (!kind) return;
-		const pos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+		const pos = canvas?.toCanvas(event.clientX, event.clientY) ?? { x: 0, y: 0 };
 		const id = wf.addNode(kind, { x: pos.x - 112, y: pos.y - 30 });
 		if (id) wf.openNodeId = id;
-	}
-
-	function isValidConnection(c: Connection | Edge) {
-		return c.source !== c.target;
 	}
 
 	export async function runAll() {
@@ -166,36 +146,14 @@
 <NodeDetails onrun={runTo} />
 
 <div class="flex h-full min-h-0 flex-col">
-	<EditorToolbar onrun={runAll} />
+	<EditorToolbar onrun={runAll} onarrange={() => canvas?.arrange()} />
 	<div class="flex min-h-0 flex-1">
 		{#if paletteOpen}
 			<Palette onadd={addAtCenter} onclose={() => setPalette(false)} />
 		{/if}
 		<main class="flex min-w-0 flex-1 flex-col">
-			<div
-				class={['relative min-h-0 flex-1', wf.running && 'mini8n-running']}
-				bind:this={canvas}
-				role="application"
-				{ondragover}
-				{ondrop}
-			>
-				<SvelteFlow
-					bind:nodes={wf.nodes}
-					bind:edges={wf.edges}
-					{nodeTypes}
-					{isValidConnection}
-					colorMode={mode.current ?? 'light'}
-					defaultEdgeOptions={{ animated: false }}
-					fitView
-					fitViewOptions={{ padding: 0.2 }}
-					minZoom={0.2}
-					snapGrid={[16, 16]}
-					deleteKey={wf.openNodeId ? null : ['Backspace', 'Delete']}
-				>
-					<Background variant={BackgroundVariant.Dots} gap={20} size={1.5} />
-					<Controls showLock={false} />
-					<MiniMap pannable zoomable class="hidden lg:block" />
-				</SvelteFlow>
+			<div class="relative min-h-0 flex-1" role="presentation" {ondragover} {ondrop}>
+				<Canvas bind:this={canvas} {viewport} />
 				{#if !paletteOpen}
 					<button
 						class="bg-primary text-primary-foreground hover:bg-primary/90 absolute top-3 left-3 z-10 flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-medium shadow-md shadow-primary/20"

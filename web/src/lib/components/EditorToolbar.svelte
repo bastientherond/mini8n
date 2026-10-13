@@ -9,6 +9,7 @@
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Play from '@lucide/svelte/icons/play';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
+	import WandSparkles from '@lucide/svelte/icons/wand-sparkles';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
@@ -20,7 +21,7 @@
 	import { attempt, duplicateWorkflow, exportWorkflow, ui } from '$lib/ui.svelte';
 	import { wf } from '$lib/workflow.svelte';
 
-	let { onrun }: { onrun: () => void } = $props();
+	let { onrun, onarrange }: { onrun: () => void; onarrange: () => void } = $props();
 
 	let serverRunning = $state(false);
 
@@ -77,6 +78,15 @@
 	</span>
 
 	<div class="ml-auto flex items-center gap-2">
+		<Button
+			variant="outline"
+			size="sm"
+			onclick={onarrange}
+			disabled={wf.nodes.length === 0}
+			title="Range et aligne tous les nœuds (Maj + Alt + T)"
+		>
+			<WandSparkles /> Ranger
+		</Button>
 		<label
 			class="hover:bg-accent flex h-8 cursor-pointer items-center gap-2 rounded-md border px-2.5 text-xs font-medium"
 			title="Met en service les déclencheurs automatiques (planification, webhook, formulaire…)"
