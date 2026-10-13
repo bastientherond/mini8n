@@ -433,6 +433,17 @@ enregistrées puis diffusées comme celles d'un membre (fusion avec les modifica
   et échantillon de chaque nœud), `get_run_result`, `get_node_output` (pagination, 30 min) ;
   `update_node`, `add_node`, `delete_node`, `connect_nodes`, `disconnect_nodes` (mêmes règles
   que l'éditeur : paramètres connus, pas de boucle) ; `list_executions`, `get_execution`.
+- **Portées** (choisies à la création du jeton) :
+  - *lecture* : consultation seulement (aucune exécution, aucune modification) ;
+  - *test* (par défaut) : exécutions en **simulation** — e-mails, messages, écritures en base,
+    fichiers, appels HTTP autres que GET et sous-workflows sont neutralisés (désactivés le
+    temps de l'exécution), les lectures de bases se font en session lecture seule — et
+    modification des seuls workflows **inactifs** (un workflow actif tourne tout seul) ;
+  - *complet* : exécutions réelles et modification de tous les workflows.
+
+  La session SQL en lecture seule est un garde-fou : une requête écrite exprès peut la
+  rétablir. Pour une garantie stricte, donnez à l'identifiant un compte de base sans droit
+  d'écriture.
 - **Sécurité** : jeton personnel limité à un workspace, stocké haché (SHA-256), révocable,
   expiration au choix ; appartenance au workspace revérifiée à chaque appel ; jamais de
   cookie (pas de CSRF), `Origin` refusé s'il n'est pas celui du site (DNS rebinding) ;

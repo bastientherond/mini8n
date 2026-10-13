@@ -42,6 +42,8 @@ pub struct Ctx {
     pub workspace_id: Uuid,
     pub execution_id: Option<Uuid>,
     pub user_id: Option<Uuid>,
+    /// Simulation (jeton d'IA « test ») : lectures en session lecture seule.
+    pub read_only: bool,
 }
 
 impl Ctx {
@@ -53,6 +55,7 @@ impl Ctx {
             workspace_id,
             execution_id: None,
             user_id,
+            read_only: false,
         }
     }
 

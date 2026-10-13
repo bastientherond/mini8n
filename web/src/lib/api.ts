@@ -82,9 +82,13 @@ export interface WorkflowSummary {
 }
 
 /** Jeton d'accès d'une IA (serveur MCP). */
+/** Portée d'un jeton d'IA. */
+export type TokenScope = 'lecture' | 'test' | 'complet';
+
 export interface ApiToken {
 	id: string;
 	name: string;
+	scope: TokenScope;
 	createdAt: string;
 	lastUsedAt: string | null;
 	expiresAt: string | null;
@@ -312,8 +316,8 @@ export const api = {
 	execution: (id: string, eid: string) => request<ExecutionDetail>('GET', `${ws(id)}/executions/${encodeURIComponent(eid)}`),
 
 	tokens: (id: string) => request<ApiToken[]>('GET', `${ws(id)}/tokens`),
-	createToken: (id: string, name: string, expiresInDays: number | null) =>
-		request<ApiToken & { token: string }>('POST', `${ws(id)}/tokens`, { name, expiresInDays }),
+	createToken: (id: string, name: string, expiresInDays: number | null, scope: TokenScope) =>
+		request<ApiToken & { token: string }>('POST', `${ws(id)}/tokens`, { name, expiresInDays, scope }),
 	deleteToken: (id: string, tid: string) => request<void>('DELETE', `${ws(id)}/tokens/${encodeURIComponent(tid)}`),
 
 	credentialTypes: () => request<CredentialKind[]>('GET', '/credential-types'),

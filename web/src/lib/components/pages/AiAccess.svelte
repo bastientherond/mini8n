@@ -6,7 +6,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import * as Select from '$lib/components/ui/select';
-	import { api, errorMessage, type ApiToken } from '$lib/api';
+	import { api, errorMessage, type ApiToken, type TokenScope } from '$lib/api';
 	import { formatDateTime } from '$lib/icons';
 
 	let { workspaceId }: { workspaceId: string } = $props();
@@ -16,6 +16,16 @@
 	let tokens = $state<ApiToken[]>([]);
 	let name = $state('Claude');
 	let validity = $state('30');
+	let scope = $state<TokenScope>('test');
+
+	const SCOPES: Record<TokenScope, { label: string; help: string }> = {
+		lecture: { label: 'Lecture seule', help: 'Consulte les workflows, les données et l’historique ; n’exécute et ne modifie rien.' },
+		test: {
+			label: 'Test (recommandé)',
+			help: 'Exécute en simulation (e-mails, messages, écritures en base, fichiers et appels HTTP autres que GET neutralisés ; bases lues en lecture seule) et ne modifie que les workflows inactifs.',
+		},
+		complet: { label: 'Complet', help: 'Exécutions réelles — les envois partent vraiment — et modification de tous les workflows, actifs compris.' },
+	};
 	let busy = $state(false);
 	/** Jeton tout juste créé : affiché une seule fois. */
 	let created = $state<string | null>(null);
@@ -44,7 +54,7 @@
 		event.preventDefault();
 		busy = true;
 		try {
-			const t = await api.createToken(workspaceId, name.trim(), validity === 'never' ? null : Number(validity));
+			const t = await api.createToken(workspaceId, name.trim(), validity === 'never' ? null : Number(validity), scope);
 			created = t.token;
 			await load();
 		} catch (e) {
@@ -81,7 +91,7 @@
 		<Card.Description>
 			Connectez Claude (Claude Code, Claude Desktop) ou une autre IA compatible MCP à ce workspace : elle peut lire les workflows,
 			les exécuter, voir les données de chaque nœud et les corriger. Ses modifications et exécutions apparaissent en direct dans
-			l'éditeur. Elle agit en votre nom : les nœuds d'envoi (e-mails, messages, écritures en base) agissent réellement.
+			l'éditeur. Elle agit en votre nom, dans les limites de la portée choisie.
 		</Card.Description>
 	</Card.Header>
 	<Card.Content class="space-y-5">
@@ -101,7 +111,19 @@
 					</Select.Content>
 				</Select.Root>
 			</div>
+			<div class="space-y-1.5">
+				<Label>Portée</Label>
+				<Select.Root type="single" bind:value={scope}>
+					<Select.Trigger class="w-48">{SCOPES[scope].label}</Select.Trigger>
+					<Select.Content>
+						{#each Object.entries(SCOPES) as [value, s] (value)}
+							<Select.Item {value} label={s.label}>{s.label}</Select.Item>
+						{/each}
+					</Select.Content>
+				</Select.Root>
+			</div>
 			<Button type="submit" disabled={busy || !name.trim()}>Créer un jeton</Button>
+			<p class="text-muted-foreground basis-full text-xs">{SCOPES[scope].help}</p>
 		</form>
 
 		{#if created}
@@ -131,7 +153,7 @@
 				{#each tokens as t (t.id)}
 					<li class="flex items-center gap-3 px-3 py-2">
 						<div class="min-w-0 flex-1">
-							<p class="truncate font-medium">{t.name}</p>
+							<p class="truncate font-medium">{t.name} <span class="text-muted-foreground font-normal">· {SCOPES[t.scope]?.label ?? t.scope}</span></p>
 							<p class="text-muted-foreground text-xs">
 								Créé le {formatDateTime(t.createdAt)} · {t.lastUsedAt ? `utilisé le ${formatDateTime(t.lastUsedAt)}` : 'jamais utilisé'} ·
 								{t.expiresAt ? `expire le ${formatDateTime(t.expiresAt)}` : 'sans expiration'}

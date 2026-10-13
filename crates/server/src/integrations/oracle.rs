@@ -85,6 +85,7 @@ pub async fn query(
             "sql": bound.sql(|n| format!(":{n}")),
             "binds": binds,
             "maxRows": max,
+            "readOnly": ctx.read_only,
         }),
     )
     .await?;

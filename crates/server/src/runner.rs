@@ -92,6 +92,9 @@ pub struct Start {
     pub target: Option<String>,
     /// Suivi de la progression (affichage en direct).
     pub progress: Option<Progress>,
+    /// Simulation : les lectures de bases de données se font en session lecture seule
+    /// (les nœuds d'envoi sont neutralisés par l'appelant).
+    pub read_only: bool,
 }
 
 /// Progression d'une exécution : `(nœud, None)` au début, `(nœud, Some(résultat))` à la fin.
@@ -114,6 +117,7 @@ struct Ctx {
     workspace_id: Uuid,
     execution_id: Uuid,
     depth: u32,
+    read_only: bool,
 }
 
 struct Job {
@@ -218,6 +222,7 @@ impl Runner {
                 workspace_id: s.workspace_id,
                 execution_id: id,
                 depth: 0,
+                read_only: s.read_only,
             },
             reply: reply_tx,
         };
@@ -312,6 +317,7 @@ impl Runner {
                 trigger: Some(TriggerEvent { node_id, data }),
                 target: None,
                 progress: None,
+                read_only: false,
             };
             if let Err(e) = self.start(start).await {
                 tracing::warn!(%e, workflow_id = %wf_id, "déclencheur d'erreur non lancé");
@@ -425,6 +431,7 @@ impl Host for ServerHost {
             workspace_id: self.ctx.workspace_id,
             execution_id: Some(self.ctx.execution_id),
             user_id: None,
+            read_only: self.ctx.read_only,
         };
         let node = node.clone();
         // Pilotes SQL, SMTP et client HTTP tournent sur le runtime principal.
@@ -518,6 +525,7 @@ impl Host for ServerHost {
                     workspace_id: ws,
                     execution_id: child,
                     depth: self.ctx.depth + 1,
+                    read_only: self.ctx.read_only,
                 },
                 progress: None,
             };

@@ -115,6 +115,8 @@ async function query(body) {
   const maxRows = Math.min(Math.max(Number(body.maxRows) || 10_000, 1), MAX_ROWS);
   const sets = bindSets(body.binds);
   return withConnection(body.connection, async (conn) => {
+    // Simulation : transaction en lecture seule (la connexion est fermée sans validation).
+    if (body.readOnly === true) await conn.execute('SET TRANSACTION READ ONLY');
     let columns = [];
     const rows = [];
     // Une exécution par jeu de valeurs (mode « pour chaque ligne »), lignes réunies.

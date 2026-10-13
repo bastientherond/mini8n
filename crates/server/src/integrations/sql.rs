@@ -178,6 +178,9 @@ pub async fn query(
         );
     }
     let mut conn = connect(ctx, db, p).await?;
+    if ctx.read_only {
+        read_only_session(&mut conn).await?;
+    }
     let fut = async {
         let mut rows: Vec<Value> = Vec::new();
         match &mut conn {
@@ -241,6 +244,19 @@ pub async fn query(
         .map_err(|_| "requête : délai dépassé".to_string())??;
     close(conn).await;
     table_of(Value::Array(rows))
+}
+
+/// Simulation : toute la session en lecture seule (garde-fou ; une garantie stricte passe
+/// par un compte de base sans droit d'écriture).
+async fn read_only_session(conn: &mut Conn) -> Result<(), String> {
+    let mut ignored = Vec::new();
+    let sql = match conn {
+        Conn::Pg(_) => "SET default_transaction_read_only = on",
+        Conn::My(_) => "SET SESSION TRANSACTION READ ONLY",
+    };
+    fetch_text(conn, sql, 1, &mut ignored)
+        .await
+        .map_err(|e| format!("session lecture seule : {e}"))
 }
 
 /// Exécute `sql` en protocole texte et ajoute ses lignes (jusqu'à `max` au total).

@@ -216,12 +216,12 @@ pub async fn endpoint(State(state): State<AppState>, headers: HeaderMap, body: B
                     "protocolVersion": version,
                     "capabilities": { "tools": { "listChanged": false } },
                     "serverInfo": { "name": "mini8n", "title": "mini8n", "version": env!("CARGO_PKG_VERSION") },
-                    "instructions": tools::INSTRUCTIONS,
+                    "instructions": format!("{}\n{}", tools::INSTRUCTIONS, tools::scope_note(auth.scope)),
                 }),
             )
         }
         "ping" => rpc_result(id, json!({})),
-        "tools/list" => rpc_result(id, json!({ "tools": tools::list() })),
+        "tools/list" => rpc_result(id, json!({ "tools": tools::list(auth.scope) })),
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or_default();
             let args = params
