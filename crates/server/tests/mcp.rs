@@ -39,6 +39,7 @@ async fn setup() -> Option<Server> {
         trust_proxy: false,
         session_ttl_hours: 1,
         allow_registration: true,
+        mail: None,
         http_allow_private: false,
         runner_threads: 1,
         execution_timeout_secs: 30,

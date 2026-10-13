@@ -114,6 +114,8 @@ crates/engine/          moteur Rust → wasm (workflow, nœuds, expressions, Par
 crates/server/          API Rust (axum + sqlx)
   migrations/           schéma PostgreSQL
   src/auth.rs           inscription, connexion, sessions, mot de passe
+  src/accounts.rs       mot de passe oublié, vérification d'adresse, invitations
+  src/mailer.rs         e-mails de la plateforme (SMTP_HOST…)
   src/workspaces.rs     workspaces, membres, rôles
   src/workflows.rs      stockage des workflows (version optimiste)
   src/live.rs           collaboration en direct (WebSocket : présence, sauvegardes diffusées)
@@ -158,7 +160,17 @@ compose.yaml            orchestration
   par compte, révocation de toutes les autres sessions au changement de mot de passe.
 - Connexion : même message et même temps de réponse pour un compte inexistant ou un mauvais
   mot de passe ; limitation par IP et par compte ; blocage progressif après 5 échecs.
-- Inscriptions désactivables (`ALLOW_REGISTRATION=false`).
+- **Inscriptions fermées par défaut** (`ALLOW_REGISTRATION=false`) : le premier compte
+  (administrateur) peut toujours être créé, les autres personnes rejoignent un workspace sur
+  **invitation** (lien à usage unique, 7 jours, révocable). Seule une adresse **vérifiée** est
+  ajoutée directement : sinon, quiconque s'inscrirait avec l'adresse d'un collègue recevrait
+  l'accès qui lui est destiné.
+- **E-mails de la plateforme** (`SMTP_HOST`, `SMTP_FROM`… facultatifs) : mot de passe oublié
+  (lien de 30 min, à usage unique, déconnecte toutes les sessions et débloque le compte),
+  vérification d'adresse, invitations. « Mot de passe oublié » répond de la même façon que
+  l'adresse soit inscrite ou non et envoie en tâche de fond (pas de déduction des comptes) ;
+  jetons de 256 bits stockés hachés. Sans SMTP, le lien d'invitation est affiché au
+  propriétaire pour qu'il le transmette (l'adresse n'est alors pas considérée vérifiée).
 
 **API**
 - Anti-CSRF : cookie `SameSite=Strict`, en-tête `Origin` obligatoire et égal à `PUBLIC_ORIGIN`
@@ -441,7 +453,6 @@ Garde-fous : longueur, profondeur, nombre d'opérations et taille des résultats
 
 ## Limites actuelles / pistes
 
-- Pas encore de vérification d'e-mail ni de réinitialisation de mot de passe par e-mail.
 - Les limites de débit de l'API et les salles de collaboration sont en mémoire (une seule
   instance de `server` ; plusieurs instances demanderaient un relais commun, ex. PostgreSQL
   `LISTEN/NOTIFY`).

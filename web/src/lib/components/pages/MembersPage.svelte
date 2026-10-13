@@ -10,7 +10,8 @@
 	import { Label } from '$lib/components/ui/label';
 	import * as Select from '$lib/components/ui/select';
 	import * as Table from '$lib/components/ui/table';
-	import { api, errorMessage, type Member, type Role } from '$lib/api';
+	import Copy from '@lucide/svelte/icons/copy';
+	import { api, errorMessage, type Member, type PendingInvitation, type Role } from '$lib/api';
 	import { formatRelative } from '$lib/icons';
 	import { router } from '$lib/router.svelte';
 	import { session } from '$lib/session.svelte';
@@ -22,6 +23,9 @@
 	const isOwner = $derived(ws.role === 'owner');
 
 	let members = $state.raw<Member[]>([]);
+	let invitations = $state.raw<PendingInvitation[]>([]);
+	/** Lien d'invitation à transmettre (pas d'envoi d'e-mail configuré). */
+	let shareLink = $state<{ email: string; link: string } | null>(null);
 	let loading = $state(true);
 	let inviteEmail = $state('');
 	let inviteRole = $state<Role>('member');
@@ -30,11 +34,22 @@
 	$effect(() => {
 		const id = ws.id;
 		loading = true;
+		shareLink = null;
 		api.members(id)
 			.then((m) => (members = m))
 			.catch((e) => toast.error(errorMessage(e)))
 			.finally(() => (loading = false));
+		if (isOwner) void loadInvitations(id);
+		else invitations = [];
 	});
+
+	async function loadInvitations(id = ws.id) {
+		try {
+			invitations = await api.invitations(id);
+		} catch (e) {
+			toast.error(errorMessage(e));
+		}
+	}
 
 	async function guarded(action: () => Promise<void>) {
 		busy = true;
@@ -52,11 +67,34 @@
 		const email = inviteEmail.trim();
 		if (!email) return;
 		return guarded(async () => {
-			members = await api.addMember(ws.id, email, inviteRole);
-			toast.success(`${email} ajouté au workspace`);
+			const res = await api.addMember(ws.id, email, inviteRole);
+			members = res.members;
 			inviteEmail = '';
-			await session.refreshWorkspaces();
+			if (res.invitation) {
+				await loadInvitations();
+				if (res.invitation.link) shareLink = { email, link: res.invitation.link };
+				else toast.success(`Invitation envoyée à ${email}`);
+			} else {
+				toast.success(`${email} ajouté au workspace`);
+				await session.refreshWorkspaces();
+			}
 		});
+	}
+
+	const revoke = (i: PendingInvitation) =>
+		guarded(async () => {
+			await api.revokeInvitation(ws.id, i.id);
+			invitations = invitations.filter((x) => x.id !== i.id);
+			toast.success(`Invitation de ${i.email} annulée`);
+		});
+
+	async function copyLink(link: string) {
+		try {
+			await navigator.clipboard.writeText(link);
+			toast.success('Lien copié');
+		} catch {
+			toast.error('Copie impossible : sélectionnez le lien manuellement.');
+		}
 	}
 
 	const setRole = (m: Member, role: Role) =>
@@ -85,7 +123,9 @@
 		<Card.Root class="mb-6">
 			<Card.Header>
 				<Card.Title class="text-base">Ajouter un membre</Card.Title>
-				<Card.Description>La personne doit déjà avoir un compte mini8n.</Card.Description>
+				<Card.Description>
+					Une personne au compte vérifié est ajoutée directement ; sinon, elle reçoit une invitation à accepter (valable 7 jours).
+				</Card.Description>
 			</Card.Header>
 			<Card.Content>
 				<form class="flex flex-wrap items-end gap-2" onsubmit={invite}>
@@ -105,6 +145,37 @@
 					</div>
 					<Button type="submit" disabled={busy || !inviteEmail.trim()}><UserPlus /> Ajouter</Button>
 				</form>
+				{#if shareLink}
+					<div class="border-primary/40 bg-primary/5 mt-4 space-y-2 rounded-lg border p-3 text-sm" role="status">
+						<p>
+							Aucun envoi d'e-mail n'est configuré : transmettez ce lien à <strong>{shareLink.email}</strong> (valable 7 jours, une seule fois).
+						</p>
+						<div class="flex items-center gap-2">
+							<code class="bg-muted min-w-0 flex-1 truncate rounded px-2 py-1 font-mono text-xs">{shareLink.link}</code>
+							<Button size="sm" variant="outline" onclick={() => copyLink(shareLink!.link)}><Copy /> Copier</Button>
+						</div>
+					</div>
+				{/if}
+				{#if invitations.length > 0}
+					<div class="mt-5">
+						<h3 class="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">Invitations en attente</h3>
+						<ul class="divide-y rounded-lg border text-sm">
+							{#each invitations as i (i.id)}
+								<li class="flex items-center gap-3 px-3 py-2">
+									<div class="min-w-0 flex-1">
+										<p class="truncate font-medium">{i.email}</p>
+										<p class="text-muted-foreground text-xs">
+											{ROLE_LABELS[i.role]} · {i.delivered ? 'envoyée par e-mail' : 'lien à transmettre'} · expire {formatRelative(i.expiresAt)}
+										</p>
+									</div>
+									<Button size="sm" variant="ghost" disabled={busy} onclick={() => revoke(i)} aria-label="Annuler l'invitation de {i.email}">
+										<Trash2 /> Annuler
+									</Button>
+								</li>
+							{/each}
+						</ul>
+					</div>
+				{/if}
 			</Card.Content>
 		</Card.Root>
 	{/if}

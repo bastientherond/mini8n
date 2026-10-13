@@ -27,6 +27,12 @@ class Session {
 	workspaces = $state.raw<WorkspaceSummary[]>([]);
 	currentId = $state<string | null>(null);
 	allowRegistration = $state(true);
+	/** Aucun compte n'existe encore : le premier sera l'administrateur. */
+	firstAccount = $state(false);
+	/** « Mot de passe oublié » disponible (SMTP de la plateforme configuré). */
+	passwordReset = $state(false);
+	/** Lien de vérification d'adresse disponible. */
+	canVerifyEmail = $state(false);
 	/** Message affiché sur l'écran de connexion (ex. session expirée). */
 	notice = $state<string | null>(null);
 
@@ -43,7 +49,10 @@ class Session {
 			if (e instanceof ApiError && e.status === 401) {
 				this.status = 'anonymous';
 				try {
-					this.allowRegistration = (await api.config()).allowRegistration;
+					const config = await api.config();
+					this.allowRegistration = config.allowRegistration;
+					this.firstAccount = config.firstAccount ?? false;
+					this.passwordReset = config.passwordReset ?? false;
 				} catch {
 					// valeur par défaut
 				}
@@ -57,6 +66,7 @@ class Session {
 		this.user = me.user;
 		this.workspaces = me.workspaces;
 		this.allowRegistration = me.allowRegistration;
+		this.canVerifyEmail = me.canVerifyEmail ?? false;
 		const last = recall(LAST_WORKSPACE_KEY);
 		this.currentId = me.workspaces.find((w) => w.id === last)?.id ?? me.workspaces[0]?.id ?? null;
 		this.notice = null;
@@ -109,6 +119,12 @@ class Session {
 		if (this.status !== 'ready') return;
 		this.reset();
 		this.notice = 'Votre session a expiré. Reconnectez-vous.';
+	}
+
+	/** Recharge le compte (cookie posé par une autre requête, adresse vérifiée…). */
+	async reload() {
+		await this.ensureCookie();
+		this.apply(await api.me());
 	}
 
 	async refreshWorkspaces() {

@@ -48,6 +48,7 @@ async fn setup(allow_private: bool) -> Option<Env> {
         trust_proxy: false,
         session_ttl_hours: 1,
         allow_registration: true,
+        mail: None,
         http_allow_private: allow_private,
         runner_threads: 2,
         execution_timeout_secs: 30,

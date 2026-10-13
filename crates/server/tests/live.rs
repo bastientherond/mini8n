@@ -39,6 +39,7 @@ async fn setup() -> Option<Server> {
         trust_proxy: false,
         session_ttl_hours: 1,
         allow_registration: true,
+        mail: None,
         http_allow_private: false,
         runner_threads: 1,
         execution_timeout_secs: 30,
@@ -162,7 +163,8 @@ async fn collaborators_see_each_other() {
     )
     .await;
     let ws = ws["id"].as_str().unwrap().to_string();
-    let (status, _, _) = api(
+    // Bob rejoint le workspace par invitation (adresse non vérifiée, pas de SMTP : lien direct).
+    let (status, added, _) = api(
         app,
         "POST",
         &format!("/api/workspaces/{ws}/members"),
@@ -170,7 +172,23 @@ async fn collaborators_see_each_other() {
         Some(&alice),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let token = added["invitation"]["link"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let (status, _, _) = api(
+        app,
+        "POST",
+        &format!("/api/auth/invitations/{token}/accept"),
+        Value::Null,
+        Some(&bob),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
     let def = json!({"nodes": [{"id": "n1", "position": {"x": 0, "y": 0}, "data": {"kind": "csv"}}], "edges": []});
     let (_, wf, _) = api(
         app,

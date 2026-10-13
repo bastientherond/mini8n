@@ -26,14 +26,14 @@ pub enum Role {
 }
 
 impl Role {
-    fn parse(s: &str) -> AppResult<Self> {
+    pub(crate) fn parse(s: &str) -> AppResult<Self> {
         match s {
             "owner" => Ok(Role::Owner),
             "member" => Ok(Role::Member),
             _ => Err(AppError::bad("Rôle invalide (owner ou member)")),
         }
     }
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Role::Owner => "owner",
             Role::Member => "member",
@@ -83,7 +83,7 @@ pub async fn require_member(db: &PgPool, ws: Uuid, user_id: Uuid) -> AppResult<R
     Role::parse(&role.ok_or(AppError::NotFound)?)
 }
 
-async fn require_owner(db: &PgPool, ws: Uuid, user_id: Uuid) -> AppResult<()> {
+pub(crate) async fn require_owner(db: &PgPool, ws: Uuid, user_id: Uuid) -> AppResult<()> {
     match require_member(db, ws, user_id).await? {
         Role::Owner => Ok(()),
         Role::Member => Err(AppError::Forbidden(
@@ -218,12 +218,23 @@ pub struct AddMemberBody {
     role: String,
 }
 
+#[derive(Serialize)]
+pub struct AddMemberResponse {
+    members: Vec<Member>,
+    /// Invitation créée quand la personne n'a pas de compte (ou pas d'adresse vérifiée).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    invitation: Option<crate::accounts::Invitation>,
+}
+
+/// Ajoute un membre : directement si son compte a une adresse vérifiée, sinon par une
+/// invitation qu'il doit accepter (quiconque peut s'inscrire avec n'importe quelle adresse :
+/// l'ajouter directement donnerait l'accès à un inconnu).
 pub async fn add_member(
     State(state): State<AppState>,
     user: AuthUser,
     Path(ws): Path<Uuid>,
     Json(body): Json<AddMemberBody>,
-) -> AppResult<(StatusCode, Json<Vec<Member>>)> {
+) -> AppResult<(StatusCode, Json<AddMemberResponse>)> {
     require_owner(&state.db, ws, user.id).await?;
     state.limits.writes.limit(&user.id.to_string())?;
     let role = Role::parse(&body.role)?;
@@ -238,15 +249,37 @@ pub async fn add_member(
             "Limite de {MAX_MEMBERS} membres atteinte"
         )));
     }
-    let target: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM users WHERE email_normalized = $1")
+    let target: Option<(Uuid, bool)> = sqlx::query_as(
+        "SELECT id, email_verified_at IS NOT NULL FROM users WHERE email_normalized = $1",
+    )
+    .bind(&email)
+    .fetch_optional(&state.db)
+    .await?;
+    let target = match target {
+        Some((id, true)) => id,
+        _ => {
+            let member: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id
+                 WHERE m.workspace_id = $1 AND u.email_normalized = $2)",
+            )
+            .bind(ws)
             .bind(&email)
-            .fetch_optional(&state.db)
+            .fetch_one(&state.db)
             .await?;
-    let Some(target) = target else {
-        return Err(AppError::bad(
-            "Aucun compte n'utilise cette adresse : la personne doit d'abord s'inscrire",
-        ));
+            if member {
+                return Err(AppError::Conflict(
+                    "Cette personne est déjà membre du workspace".into(),
+                ));
+            }
+            let invitation = crate::accounts::invite(&state, ws, &user, &email, role).await?;
+            return Ok((
+                StatusCode::ACCEPTED,
+                Json(AddMemberResponse {
+                    members: member_list(&state.db, ws).await?,
+                    invitation: Some(invitation),
+                }),
+            ));
+        }
     };
     let inserted = sqlx::query(
         "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
@@ -263,7 +296,13 @@ pub async fn add_member(
         ));
     }
     tracing::info!(workspace_id = %ws, by = %user.id, member = %target, "membre ajouté");
-    Ok((StatusCode::CREATED, Json(member_list(&state.db, ws).await?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(AddMemberResponse {
+            members: member_list(&state.db, ws).await?,
+            invitation: None,
+        }),
+    ))
 }
 
 #[derive(Deserialize)]

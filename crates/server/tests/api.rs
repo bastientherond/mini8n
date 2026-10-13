@@ -29,6 +29,7 @@ async fn setup_with(cookie_secure: CookieSecure, trust_proxy: bool) -> Option<Ro
         trust_proxy,
         session_ttl_hours: 1,
         allow_registration: true,
+        mail: None,
         http_allow_private: false,
         runner_threads: 2,
         execution_timeout_secs: 30,
@@ -366,7 +367,58 @@ async fn workspace_isolation_and_members() {
         Some(&alice),
     )
     .await;
-    assert_eq!(add.status, StatusCode::CREATED, "{:?}", add.body);
+    // Adresse de Bob non vérifiée : invitation (sans SMTP, lien à transmettre), pas d'accès direct.
+    assert_eq!(add.status, StatusCode::ACCEPTED, "{:?}", add.body);
+    let link = add.body["invitation"]["link"].as_str().unwrap().to_string();
+    let token = link.rsplit('/').next().unwrap();
+    assert_eq!(
+        api(
+            &app,
+            "GET",
+            &format!("/api/workspaces/{ws_id}/workflows"),
+            None,
+            Some(&bob)
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    // Seul le compte invité peut accepter.
+    let eve = register(&app, &email()).await;
+    assert_eq!(
+        api(
+            &app,
+            "POST",
+            &format!("/api/auth/invitations/{token}/accept"),
+            None,
+            Some(&eve)
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    let accepted = api(
+        &app,
+        "POST",
+        &format!("/api/auth/invitations/{token}/accept"),
+        None,
+        Some(&bob),
+    )
+    .await;
+    assert_eq!(accepted.status, StatusCode::OK, "{:?}", accepted.body);
+    // Usage unique.
+    assert_eq!(
+        api(
+            &app,
+            "POST",
+            &format!("/api/auth/invitations/{token}/accept"),
+            None,
+            Some(&bob)
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
     assert_eq!(
         api(
             &app,
