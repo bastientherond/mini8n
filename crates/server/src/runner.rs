@@ -336,11 +336,16 @@ struct ErrorTarget {
 }
 
 /// Marque les exécutions interrompues par un arrêt du serveur.
-pub async fn recover_interrupted(db: &PgPool) -> Result<u64, sqlx::Error> {
+///
+/// Une exécution est bornée par `EXECUTION_TIMEOUT_SECS` : au-delà (plus une marge), une
+/// exécution encore « en cours » a perdu son serveur (arrêt, plantage). Les plus récentes
+/// peuvent tourner sur une autre instance : elles ne sont pas touchées.
+pub async fn recover_interrupted(db: &PgPool, timeout_secs: u64) -> Result<u64, sqlx::Error> {
     Ok(sqlx::query(
-        "UPDATE executions SET status = 'error', error = 'Interrompue (redémarrage du serveur)', finished_at = now()
-         WHERE status = 'running'",
+        "UPDATE executions SET status = 'error', error = 'Interrompue (arrêt du serveur)', finished_at = now()
+         WHERE status = 'running' AND started_at < now() - make_interval(secs => $1)",
     )
+    .bind((timeout_secs + 60) as f64)
     .execute(db)
     .await?
     .rows_affected())

@@ -86,10 +86,23 @@ async fn main() {
         std::process::exit(1);
     }
 
-    match runner::recover_interrupted(&db).await {
-        Ok(n) if n > 0 => tracing::warn!(n, "exécutions interrompues marquées en erreur"),
-        Ok(_) => {}
-        Err(e) => tracing::error!(%e, "reprise des exécutions"),
+    // Exécutions orphelines (serveur arrêté ou planté pendant l'exécution) : au démarrage,
+    // puis régulièrement (une autre instance a pu tomber).
+    {
+        let (db, timeout) = (db.clone(), config.execution_timeout_secs);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                tick.tick().await;
+                match runner::recover_interrupted(&db, timeout).await {
+                    Ok(n) if n > 0 => {
+                        tracing::warn!(n, "exécutions interrompues marquées en erreur")
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(%e, "reprise des exécutions"),
+                }
+            }
+        });
     }
     auth::spawn_session_cleanup(Arc::new(db.clone()));
     let retention = config.executions_retention_days;

@@ -641,7 +641,7 @@ async fn execution_data_retention() {
     )
     .await;
     let wf = wf.body["id"].as_str().unwrap().to_string();
-    assert_eq!(wf_keep_data(&app, &ws, &wf, &owner).await, true);
+    assert!(wf_keep_data(&app, &ws, &wf, &owner).await);
 
     let output = |exec: String| {
         let (app, ws, owner) = (app.clone(), ws.clone(), owner.clone());

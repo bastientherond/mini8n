@@ -533,9 +533,15 @@ Garde-fous : longueur, profondeur, nombre d'opérations et taille des résultats
 
 ## Limites actuelles / pistes
 
-- Les limites de débit de l'API et les salles de collaboration sont en mémoire (une seule
-  instance de `server` ; plusieurs instances demanderaient un relais commun, ex. PostgreSQL
-  `LISTEN/NOTIFY`).
+- **Plusieurs instances de `server`** : ce qui passe par PostgreSQL est sûr — planification
+  et surveillance d'API (échéances réservées par `FOR UPDATE SKIP LOCKED` : jamais lancées
+  deux fois), webhooks, historique, sessions, reprise des exécutions orphelines (seules celles
+  qui ont dépassé `EXECUTION_TIMEOUT_SECS` sont marquées interrompues). Restent **par instance** :
+  la collaboration en direct (deux personnes sur deux instances ne se voient pas), les limites
+  de débit (multipliées par le nombre d'instances) et les données des exécutions lancées par
+  une IA (`get_node_output`). Recommandé : **une instance** redémarrée automatiquement
+  (`restart: unless-stopped`) ; au-delà, un routage persistant (par cookie ou IP) vers une
+  même instance, en attendant un relais commun (PostgreSQL `LISTEN/NOTIFY`).
 - Collaboration : les modifications des autres apparaissent à chaque sauvegarde (moins
   d'une seconde après), pas frappe par frappe ; le texte d'un même paramètre modifié en
   même temps n'est pas fusionné caractère par caractère.

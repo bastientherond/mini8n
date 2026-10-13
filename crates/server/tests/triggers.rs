@@ -689,3 +689,53 @@ async fn server_side_http_blocks_private_networks() {
         .to_string();
     assert!(err.contains("non autorisée"), "{err}");
 }
+
+/// Exécution « en cours » : récente, elle peut tourner sur une autre instance (laissée
+/// telle quelle) ; au-delà du délai maximal, elle est orpheline (marquée interrompue).
+#[tokio::test]
+async fn orphan_executions_are_recovered_without_touching_live_ones() {
+    let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
+        return;
+    };
+    let db = sqlx::PgPool::connect(&url).await.unwrap();
+    mini8n_server::MIGRATOR.run(&db).await.unwrap();
+    let ws = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO workspaces (id, name) VALUES ($1, 'Instances')")
+        .bind(ws)
+        .execute(&db)
+        .await
+        .unwrap();
+    let (live, orphan) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    for (id, age) in [(live, 10.0), (orphan, 3600.0)] {
+        sqlx::query(
+            "INSERT INTO executions (id, workspace_id, workflow_name, trigger_kind, status, started_at)
+             VALUES ($1, $2, 'w', 'schedule', 'running', now() - make_interval(secs => $3))",
+        )
+        .bind(id)
+        .bind(ws)
+        .bind(age)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+    mini8n_server::runner::recover_interrupted(&db, 300)
+        .await
+        .unwrap();
+    let status = |id| {
+        let db = db.clone();
+        async move {
+            sqlx::query_scalar::<_, String>("SELECT status FROM executions WHERE id = $1")
+                .bind(id)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(status(live).await, "running");
+    assert_eq!(status(orphan).await, "error");
+    sqlx::query("DELETE FROM workspaces WHERE id = $1")
+        .bind(ws)
+        .execute(&db)
+        .await
+        .unwrap();
+}
