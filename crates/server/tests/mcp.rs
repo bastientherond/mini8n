@@ -432,6 +432,25 @@ async fn ai_debugs_a_workflow_live() {
     .await;
     assert_eq!(detail["status"], "success");
 
+    // Création d'un workflow et identifiants disponibles (sans secret).
+    let (created_wf, _) = call(app, &token, "create_workflow", json!({"name": "Rapport"})).await;
+    let new_id = created_wf["workflow_id"].as_str().unwrap();
+    let (node, _) = call(
+        app,
+        &token,
+        "add_node",
+        json!({"workflow_id": new_id, "kind": "trigger_manual"}),
+    )
+    .await;
+    assert!(
+        node["node_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("trigger_manual-")
+    );
+    let (creds, _) = call(app, &token, "list_credentials", json!({})).await;
+    assert_eq!(creds["credentials"], json!([]));
+
     // Un autre workspace reste inaccessible avec ce jeton.
     let (_, other, _) = api(
         app,

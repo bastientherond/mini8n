@@ -7,8 +7,12 @@ use serde_json::{Map, Value, json};
 
 use crate::workflows::valid_id;
 
-/// Écart horizontal entre deux nœuds placés automatiquement.
-const GAP_X: f64 = 260.0;
+/// Placement automatique, aligné sur la mise en page de l'éditeur (nœud de 240 × 92,
+/// espacement 120 × 60).
+const GAP_X: f64 = 360.0;
+const GAP_Y: f64 = 160.0;
+const NODE_W: f64 = 240.0;
+const NODE_H: f64 = 92.0;
 
 pub type EditResult<T> = Result<T, String>;
 
@@ -184,7 +188,7 @@ pub fn add_node(
             .and_then(Value::as_f64)
             .unwrap_or(0.0)
     };
-    let position = match (from, to) {
+    let wanted = match (from, to) {
         (Some(f), _) => {
             let n = find(def, f)?;
             json!({ "x": pos(n, "x") + GAP_X, "y": pos(n, "y") })
@@ -202,6 +206,16 @@ pub fn add_node(
             json!({ "x": if max_x.is_finite() { max_x + GAP_X } else { 0.0 }, "y": if max_x.is_finite() { y } else { 0.0 } })
         }
     };
+    // Place occupée (branches parallèles) : le nœud descend jusqu'à une place libre.
+    let x = wanted["x"].as_f64().unwrap_or(0.0);
+    let mut y = wanted["y"].as_f64().unwrap_or(0.0);
+    while nodes(def)
+        .iter()
+        .any(|n| (pos(n, "x") - x).abs() < NODE_W + 40.0 && (pos(n, "y") - y).abs() < NODE_H + 40.0)
+    {
+        y += GAP_Y;
+    }
+    let position = json!({ "x": x, "y": y });
     let mut values = Map::new();
     for p in &spec.params {
         values.insert(p.name.into(), p.default.clone());
@@ -433,6 +447,15 @@ mod tests {
                 .unwrap_err()
                 .contains("pas d'entrée")
         );
+
+        // Deux nœuds après le même prédécesseur ne se superposent pas.
+        let a = add_node(&mut d, "limit", None, None, Some("t"), None).unwrap();
+        let (fy, ay) = (
+            &find(&d, "f").unwrap()["position"]["y"],
+            &find(&d, &a).unwrap()["position"]["y"],
+        );
+        assert!(ay.as_f64().unwrap() > fy.as_f64().unwrap(), "{fy} / {ay}");
+        delete_node(&mut d, &a).unwrap();
 
         // Suppression : la liaison f → s est rétablie.
         delete_node(&mut d, &id).unwrap();

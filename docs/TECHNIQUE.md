@@ -336,7 +336,8 @@ enregistrées puis diffusées comme celles d'un membre (fusion avec les modifica
   En développement : `http://localhost:5173/api/mcp` (proxy Vite).
 - **Transport** : « Streamable HTTP » sans session, `POST /api/mcp` (un message JSON-RPC par
   requête, réponse JSON ; pas de flux SSE). Protocoles 2025-06-18, 2025-03-26, 2024-11-05.
-- **Outils** : `list_workflows`, `get_workflow`, `list_node_types` ; `run_workflow` (sur le
+- **Outils** : `list_workflows`, `get_workflow`, `create_workflow`, `list_node_types`,
+  `list_credentials` (nom et type des identifiants, jamais les secrets) ; `run_workflow` (sur le
   serveur, tout ou jusqu'à un nœud, données de déclencheur au choix ; statut, colonnes, erreur
   et échantillon de chaque nœud), `get_run_result`, `get_node_output` (pagination, 30 min) ;
   `update_node`, `add_node`, `delete_node`, `connect_nodes`, `disconnect_nodes` (mêmes règles

@@ -27,7 +27,8 @@ const MAX_PAGE: usize = 100;
 const MAX_CELL: usize = 500;
 
 pub const INSTRUCTIONS: &str = "mini8n : automatisation de flux de données (workflows en graphe de nœuds ; \
-chaque nœud produit une table). Pour déboguer : list_workflows → get_workflow → run_workflow \
+chaque nœud produit une table). Pour créer : create_workflow puis add_node / connect_nodes (list_credentials \
+donne les identifiants des bases et de l'e-mail). Pour déboguer : list_workflows → get_workflow → run_workflow \
 (statut, colonnes, erreurs et échantillon de lignes de chaque nœud) → get_node_output pour voir plus de lignes. \
 Corrigez avec update_node / add_node / connect_nodes / disconnect_nodes / delete_node : les modifications \
 sont enregistrées et apparaissent en direct dans l'éditeur des membres connectés. list_node_types décrit \
@@ -65,6 +66,22 @@ pub fn list() -> Vec<Value> {
             "Workflows",
             "Liste les workflows du workspace.",
             json!({}),
+            &[],
+            true,
+        ),
+        tool(
+            "create_workflow",
+            "Créer un workflow",
+            "Crée un workflow vide (à compléter avec add_node et connect_nodes).",
+            json!({ "name": { "type": "string", "description": "Nom du workflow" } }),
+            &["name"],
+            false,
+        ),
+        tool(
+            "list_credentials",
+            "Identifiants",
+            "Identifiants enregistrés du workspace (nom, type, résumé non secret) : leur id se met dans le paramètre credential des nœuds bases de données, e-mail et messagerie. Les secrets ne sont jamais exposés.",
+            json!({ "kind": { "type": "string", "description": "Filtrer par type : postgres, mysql, oracle, smtp, chat_webhook" } }),
             &[],
             true,
         ),
@@ -245,6 +262,8 @@ pub async fn call(
 ) -> Result<Outcome, String> {
     let value = match name {
         "list_workflows" => list_workflows(state, auth).await?,
+        "create_workflow" => create_workflow(state, auth, args).await?,
+        "list_credentials" => list_credentials(state, auth, args).await?,
         "get_workflow" => get_workflow(state, auth, args).await?,
         "list_node_types" => node_types(args)?,
         "run_workflow" => run_workflow(state, auth, args).await?,
@@ -331,6 +350,68 @@ async fn list_workflows(state: &AppState, auth: &TokenAuth) -> Result<Value, Str
         })
         .collect();
     Ok(json!({ "workflows": list }))
+}
+
+async fn create_workflow(
+    state: &AppState,
+    auth: &TokenAuth,
+    args: &Value,
+) -> Result<Value, String> {
+    state
+        .limits
+        .writes
+        .limit(&auth.user_id.to_string())
+        .map_err(|e| e.to_string())?;
+    let name = crate::validate::label(arg(args, "name")?, "Nom du workflow", 120)
+        .map_err(|e| e.to_string())?;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM workflows WHERE workspace_id = $1")
+        .bind(auth.workspace_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(db_err)?;
+    if count >= workflows::MAX_WORKFLOWS {
+        return Err(format!(
+            "Limite de {} workflows atteinte",
+            workflows::MAX_WORKFLOWS
+        ));
+    }
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO workflows (id, workspace_id, name, definition, created_by, updated_by)
+         VALUES ($1, $2, $3, $4, $5, $5)",
+    )
+    .bind(id)
+    .bind(auth.workspace_id)
+    .bind(&name)
+    .bind(SqlJson(json!({ "version": 1, "nodes": [], "edges": [] })))
+    .bind(auth.user_id)
+    .execute(&state.db)
+    .await
+    .map_err(db_err)?;
+    Ok(
+        json!({ "workflow_id": id, "name": name, "version": 1, "editorUrl": editor_url(state, auth, id) }),
+    )
+}
+
+async fn list_credentials(
+    state: &AppState,
+    auth: &TokenAuth,
+    args: &Value,
+) -> Result<Value, String> {
+    let rows: Vec<(Uuid, String, String, SqlJson<Value>)> = sqlx::query_as(
+        "SELECT id, name, kind, summary FROM credentials
+         WHERE workspace_id = $1 AND ($2::text IS NULL OR kind = $2) ORDER BY name",
+    )
+    .bind(auth.workspace_id)
+    .bind(opt(args, "kind"))
+    .fetch_all(&state.db)
+    .await
+    .map_err(db_err)?;
+    let list: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, name, kind, SqlJson(summary))| json!({ "id": id, "name": name, "kind": kind, "summary": summary }))
+        .collect();
+    Ok(json!({ "credentials": list }))
 }
 
 struct Loaded {
