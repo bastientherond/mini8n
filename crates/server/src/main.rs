@@ -104,6 +104,15 @@ async fn main() {
             }
         });
     }
+    // Installation neuve : le premier compte créé devient administrateur.
+    if let Ok(false) = sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM users)")
+        .fetch_one(&db)
+        .await
+    {
+        tracing::warn!(
+            "aucun compte : le premier compte créé sera l'administrateur — créez-le avant d'exposer le serveur"
+        );
+    }
     auth::spawn_session_cleanup(Arc::new(db.clone()));
     let retention = config.executions_retention_days;
     let bind = config.bind;

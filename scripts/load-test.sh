@@ -9,7 +9,8 @@
 #   2. GET /api/workspaces        (requête authentifiée : session + base)
 #   3. une rafale de webhooks     (HOOKS par workflow, en parallèle) : temps pour que toutes
 #      les exécutions se terminent, refus éventuels (file pleine : 429), aucune perte.
-# Le workspace est supprimé à la fin. À lancer contre un serveur de test, jamais en production.
+# Le workspace est supprimé à la fin. À lancer contre un serveur de test, jamais en production
+# (le cookie de session du compte de test apparaît dans la ligne de commande de ab).
 set -euo pipefail
 
 BASE="${1:?Usage : EMAIL=… PASSWORD=… $0 URL_API (ex. http://localhost:3000)}"
@@ -31,7 +32,10 @@ json() { python3 -c "import json,sys;print(json.load(sys.stdin)$1)"; }
 WS=""
 cleanup() { [ -z "$WS" ] || api DELETE "/workspaces/$WS" >/dev/null || true; rm -f "$JAR"; }
 trap cleanup EXIT
-api POST /auth/login "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" >/dev/null \
+# Identifiants transmis par l'entrée standard (jamais en argument, visible avec ps).
+python3 -c 'import json,os;print(json.dumps({"email": os.environ["EMAIL"], "password": os.environ["PASSWORD"]}))' \
+  | curl -sf -X POST "$BASE/api/auth/login" -b "$JAR" -c "$JAR" -H "Origin: $ORIGIN" \
+      -H 'Content-Type: application/json' --data-binary @- >/dev/null \
   || { echo "Connexion impossible avec $EMAIL" >&2; exit 1; }
 WS="$(api POST /workspaces '{"name":"Test de charge"}' | json "['id']")"
 

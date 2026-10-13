@@ -17,7 +17,7 @@ use crate::error::{AppError, AppResult};
 use crate::validate;
 
 const MAX_WORKSPACES_PER_USER: i64 = 50;
-const MAX_MEMBERS: i64 = 200;
+pub(crate) const MAX_MEMBERS: i64 = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {

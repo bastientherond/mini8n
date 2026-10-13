@@ -261,7 +261,12 @@ pub async fn set_keep_data(
     Path((ws, id)): Path<(Uuid, Uuid)>,
     Json(body): Json<DataBody>,
 ) -> AppResult<Json<WorkflowDoc>> {
-    require_member(&state.db, ws, user.id).await?;
+    // Désactiver (protéger les données) : tout membre ; réactiver : propriétaires seulement.
+    if body.keep_data {
+        crate::workspaces::require_owner(&state.db, ws, user.id).await?;
+    } else {
+        require_member(&state.db, ws, user.id).await?;
+    }
     let mut tx = state.db.begin().await?;
     let done =
         sqlx::query("UPDATE workflows SET keep_data = $3 WHERE id = $1 AND workspace_id = $2")

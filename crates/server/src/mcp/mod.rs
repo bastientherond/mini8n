@@ -32,13 +32,28 @@ use crate::tokens::{self, TokenAuth};
 /// Versions du protocole acceptées (la plus récente en premier).
 const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_BODY: usize = 1024 * 1024;
-/// Exécutions conservées en mémoire (données de chaque nœud).
-const KEPT_RUNS: usize = 20;
+/// Exécutions conservées en mémoire (données de chaque nœud) : au total, par workspace,
+/// et taille maximale des données.
+const KEPT_RUNS: usize = 50;
+const KEPT_RUNS_PER_WORKSPACE: usize = 5;
+const KEPT_BYTES: usize = 256 * 1024 * 1024;
 const RUN_TTL: Duration = Duration::from_secs(30 * 60);
 /// Une IA inactive quitte l'éditeur au bout de ce délai.
 const AGENT_IDLE: Duration = Duration::from_secs(90);
 
 /// Exécution lancée par une IA, conservée pour consulter les données de chaque nœud.
+impl KeptRun {
+    /// Taille des données conservées (Parquet de chaque nœud).
+    fn bytes(&self) -> usize {
+        self.report
+            .results
+            .values()
+            .filter_map(|r| r.parquet.as_ref())
+            .map(Vec::len)
+            .sum()
+    }
+}
+
 pub struct KeptRun {
     pub execution_id: Uuid,
     pub workspace_id: Uuid,
@@ -57,13 +72,25 @@ pub struct McpState {
 }
 
 impl McpState {
+    /// Conserve une exécution : par workspace (un workspace n'évince pas les autres) et dans
+    /// une enveloppe mémoire globale ; les plus anciennes partent en premier.
     fn keep(&self, run: KeptRun) {
         let mut runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
         runs.retain(|r| r.at.elapsed() < RUN_TTL);
-        if runs.len() >= KEPT_RUNS {
-            runs.pop_front();
+        let ws = run.workspace_id;
+        while runs.iter().filter(|r| r.workspace_id == ws).count() >= KEPT_RUNS_PER_WORKSPACE {
+            let oldest = runs
+                .iter()
+                .position(|r| r.workspace_id == ws)
+                .expect("présente");
+            runs.remove(oldest);
         }
         runs.push_back(Arc::new(run));
+        while runs.len() > KEPT_RUNS || runs.iter().map(|r| r.bytes()).sum::<usize>() > KEPT_BYTES {
+            if runs.pop_front().is_none() {
+                break;
+            }
+        }
     }
 
     fn run(&self, workspace: Uuid, execution: Uuid) -> Option<Arc<KeptRun>> {

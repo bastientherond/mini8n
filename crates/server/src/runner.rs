@@ -694,10 +694,18 @@ async fn record_start(
 
 async fn record_finish(db: &PgPool, id: Uuid, s: &Summary) -> Result<(), sqlx::Error> {
     sqlx::query(
-        // Aperçu des lignes produites : seulement si le workflow conserve ses données.
+        // Aperçu des lignes produites : seulement si le workflow ET tous ceux qui l'ont appelé
+        // (sous-workflows) conservent leurs données — un parent « sans données » transmet ses
+        // lignes à l'enfant, qui ne doit pas les garder.
         "UPDATE executions SET status = $2, error = $3, finished_at = now(), duration_ms = $4, report = $5,
-                output = CASE WHEN COALESCE((SELECT w.keep_data FROM workflows w WHERE w.id = executions.workflow_id), true)
-                              THEN $6 END
+                output = CASE WHEN NOT EXISTS (
+                    WITH RECURSIVE chain AS (
+                        SELECT e.parent_id, e.workflow_id FROM executions e WHERE e.id = $1
+                        UNION ALL
+                        SELECT p.parent_id, p.workflow_id FROM executions p JOIN chain c ON p.id = c.parent_id
+                    )
+                    SELECT 1 FROM chain JOIN workflows w ON w.id = chain.workflow_id WHERE NOT w.keep_data
+                ) THEN $6 END
          WHERE id = $1",
     )
     .bind(id)

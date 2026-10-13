@@ -429,6 +429,7 @@ struct InviteRow {
     delivered: bool,
     workspace: String,
     invited_by: Option<String>,
+    inviter_id: Option<Uuid>,
     expires_at: DateTime<Utc>,
 }
 
@@ -439,10 +440,12 @@ async fn find_invite(state: &AppState, token: &str) -> AppResult<InviteRow> {
     }
     sqlx::query_as(
         "SELECT t.email_normalized, t.workspace_id, t.role, t.delivered, w.name AS workspace,
-                u.display_name AS invited_by, t.expires_at
+                u.display_name AS invited_by, t.invited_by AS inviter_id, t.expires_at
          FROM email_tokens t JOIN workspaces w ON w.id = t.workspace_id
          LEFT JOIN users u ON u.id = t.invited_by
-         WHERE t.token_hash = $1 AND t.purpose = 'invite' AND t.expires_at > now()",
+         WHERE t.token_hash = $1 AND t.purpose = 'invite' AND t.expires_at > now()
+           AND EXISTS (SELECT 1 FROM workspace_members m
+                       WHERE m.workspace_id = t.workspace_id AND m.user_id = t.invited_by AND m.role = 'owner')",
     )
     .bind(token_hash(token))
     .fetch_optional(&state.db)
@@ -488,6 +491,26 @@ async fn join(
             .rows_affected();
     if consumed == 0 {
         return Err(AppError::bad("Invitation déjà utilisée"));
+    }
+    // Invitation toujours valable : son auteur est encore propriétaire (un propriétaire
+    // retiré ou rétrogradé ne peut pas laisser d'accès derrière lui) et il reste de la place.
+    let (owner, members): (bool, i64) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM workspace_members WHERE workspace_id = $1 AND user_id = $2 AND role = 'owner'),
+                (SELECT count(*) FROM workspace_members WHERE workspace_id = $1)",
+    )
+    .bind(inv.workspace_id)
+    .bind(inv.inviter_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !owner {
+        return Err(AppError::bad(
+            "Cette invitation n'est plus valable : demandez-en une nouvelle",
+        ));
+    }
+    if members >= crate::workspaces::MAX_MEMBERS {
+        return Err(AppError::bad(
+            "Ce workspace a atteint son nombre maximal de membres",
+        ));
     }
     sqlx::query(
         "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",

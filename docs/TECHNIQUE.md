@@ -96,6 +96,10 @@ apparaît dans `docker compose logs backup`.
   transaction avec la base actuelle, conservée sous `mini8n_avant_<date>` pour un retour
   arrière. Un fichier invalide ou incomplet ne modifie rien. L'API est arrêtée pendant
   l'échange ; ses migrations mettent le schéma à jour au redémarrage.
+- **Après restauration** : les sessions et liens par e-mail de la sauvegarde sont invalidés
+  (chacun se reconnecte) ; vérifiez les jetons d'accès des IA, qui reviennent tels qu'au moment
+  de la sauvegarde. Ne restaurez que vos propres sauvegardes (exécution avec les droits
+  d'administrateur de la base).
 - **Tester** : restaurez une sauvegarde de temps en temps (par exemple sur une machine de
   test) — une sauvegarde jamais restaurée n'est qu'une hypothèse.
 
@@ -251,7 +255,8 @@ compose.yaml            orchestration
 - Connexion : même message et même temps de réponse pour un compte inexistant ou un mauvais
   mot de passe ; limitation par IP et par compte ; blocage progressif après 5 échecs.
 - **Inscriptions fermées par défaut** (`ALLOW_REGISTRATION=false`) : le premier compte
-  (administrateur) peut toujours être créé, les autres personnes rejoignent un workspace sur
+  (administrateur) peut toujours être créé — créez-le **avant** d'exposer le serveur (le
+  serveur le rappelle au démarrage tant qu'aucun compte n'existe), les autres personnes rejoignent un workspace sur
   **invitation** (lien à usage unique, 7 jours, révocable). Seule une adresse **vérifiée** est
   ajoutée directement : sinon, quiconque s'inscrirait avec l'adresse d'un collègue recevrait
   l'accès qui lui est destiné.
@@ -473,14 +478,19 @@ enregistrées puis diffusées comme celles d'un membre (fusion avec les modifica
 - **Portées** (choisies à la création du jeton) :
   - *lecture* : consultation seulement (aucune exécution, aucune modification) ;
   - *test* (par défaut) : exécutions en **simulation** — e-mails, messages, écritures en base,
-    fichiers, appels HTTP autres que GET et sous-workflows sont neutralisés (désactivés le
-    temps de l'exécution), les lectures de bases se font en session lecture seule — et
-    modification des seuls workflows **inactifs** (un workflow actif tourne tout seul) ;
+    fichiers, sous-workflows et appels HTTP qui modifient (méthode autre que GET) ou peuvent
+    transmettre des données (expressions `{{ }}`) sont neutralisés le temps de l'exécution ;
+    les lectures de bases n'acceptent qu'**une** instruction `SELECT`/`WITH` (ni `;`, ni bloc
+    PL/SQL, ni `INTO OUTFILE`), exécutée dans une transaction en lecture seule puis annulée.
+    Seuls les workflows **inactifs** et non appelables par d'autres (« Appelé par un
+    workflow ») peuvent être modifiés : les autres s'exécutent réellement. Les échecs de ces
+    exécutions ne déclenchent pas les workflows « Sur erreur » ;
   - *complet* : exécutions réelles et modification de tous les workflows.
 
-  La session SQL en lecture seule est un garde-fou : une requête écrite exprès peut la
-  rétablir. Pour une garantie stricte, donnez à l'identifiant un compte de base sans droit
-  d'écriture.
+  Une fonction de la base qui écrit par un autre canal (transaction autonome, `dblink`…)
+  échappe à toute transaction : pour une garantie stricte, donnez à l'identifiant un compte
+  de base sans droit d'écriture. Une réinitialisation de mot de passe révoque aussi les
+  jetons d'IA du compte.
 - **Sécurité** : jeton personnel limité à un workspace, stocké haché (SHA-256), révocable,
   expiration au choix ; appartenance au workspace revérifiée à chaque appel ; jamais de
   cookie (pas de CSRF), `Origin` refusé s'il n'est pas celui du site (DNS rebinding) ;

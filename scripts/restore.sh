@@ -8,6 +8,10 @@
 # Une restauration en échec ne modifie rien. L'API est arrêtée pendant l'échange, puis
 # redémarrée (ses migrations mettent le schéma à jour si la sauvegarde est plus ancienne).
 # La clé secrets/credentials_key.txt doit être celle en usage lors de la sauvegarde.
+# Ne restaurez que VOS sauvegardes : la restauration s'exécute avec les droits d'administrateur
+# de la base. Les sessions et liens par e-mail de la sauvegarde sont invalidés (chacun se
+# reconnecte) ; vérifiez ensuite les jetons d'accès des IA (Paramètres), qui reviennent tels
+# qu'ils étaient au moment de la sauvegarde.
 set -eu
 cd "$(dirname "$0")/.."
 FILE="${1:?Usage : $0 <fichier .dump>}"
@@ -46,6 +50,17 @@ then
   echo "Échec de l'échange des bases : rien n'a été modifié." >&2
   exit 1
 fi
+# Sessions et liens à usage unique de la sauvegarde : invalidés (révoqués depuis, peut-être).
+# (Tables absentes d'une sauvegarde ancienne : ignorées, les migrations les créeront.)
+docker compose exec -T db psql --username=mini8n --dbname=mini8n -v ON_ERROR_STOP=1 -qAt >/dev/null <<'SQL'
+DO $$
+BEGIN
+  IF to_regclass('sessions') IS NOT NULL THEN DELETE FROM sessions; END IF;
+  IF to_regclass('email_tokens') IS NOT NULL THEN
+    DELETE FROM email_tokens WHERE purpose IN ('reset', 'verify');
+  END IF;
+END $$;
+SQL
 [ -z "$running" ] || docker compose start server
 echo "Restauration terminée. Ancienne base conservée : $old"
 echo "Après vérification : docker compose exec db dropdb -U mini8n $old"

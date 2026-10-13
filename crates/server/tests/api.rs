@@ -709,6 +709,89 @@ async fn execution_data_retention() {
         "les comptes de lignes aussi"
     );
 
+    // Sous-workflow : il ne garde pas les données d'un parent « sans données ».
+    let child_def = json!({"nodes": [
+        {"id": "in", "position": {"x": 0, "y": 0}, "data": {"kind": "trigger_workflow", "name": "Entrée", "params": {}}},
+        {"id": "copy", "position": {"x": 300, "y": 0}, "data": {"kind": "limit", "name": "Copie", "params": {"count": 10}}}
+    ], "edges": [{"id": "e", "source": "in", "target": "copy", "targetHandle": "in-0"}]});
+    let child = api(
+        &app,
+        "POST",
+        &format!("/api/workspaces/{ws}/workflows"),
+        Some(json!({"name": "Enfant", "definition": child_def})),
+        Some(&owner),
+    )
+    .await;
+    let child = child.body["id"].as_str().unwrap().to_string();
+    let parent_def = json!({"nodes": [
+        {"id": "src", "position": {"x": 0, "y": 0}, "data": {"kind": "manual", "name": "Clients", "params": {"data": "[{\"email\": \"b@exemple.test\"}]"}}},
+        {"id": "call", "position": {"x": 300, "y": 0}, "data": {"kind": "subworkflow", "name": "Appel", "params": {"workflow": child}}}
+    ], "edges": [{"id": "e", "source": "src", "target": "call", "targetHandle": "in-0"}]});
+    let doc = api(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/workflows/{wf}"),
+        None,
+        Some(&owner),
+    )
+    .await;
+    let version = doc.body["version"].as_i64().unwrap();
+    let saved = api(
+        &app,
+        "PUT",
+        &format!("/api/workspaces/{ws}/workflows/{wf}"),
+        Some(json!({"name": "Clients", "definition": parent_def, "version": version})),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.body);
+    let third = run().await;
+    let list = api(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/executions?workflow={child}"),
+        None,
+        Some(&owner),
+    )
+    .await;
+    let child_exec = list
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["parentId"] == third.as_str())
+        .expect("exécution enfant")
+        .clone();
+    let child_detail = api(
+        &app,
+        "GET",
+        &format!(
+            "/api/workspaces/{ws}/executions/{}",
+            child_exec["id"].as_str().unwrap()
+        ),
+        None,
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(
+        child_detail.body["status"], "success",
+        "{:?}",
+        child_detail.body
+    );
+    assert_eq!(
+        child_detail.body["output"],
+        Value::Null,
+        "données du parent non conservées par l'enfant"
+    );
+    api(
+        &app,
+        "DELETE",
+        &format!("/api/workspaces/{ws}/workflows/{child}/executions"),
+        None,
+        Some(&owner),
+    )
+    .await;
+
     // Effacement de l'historique : réservé aux propriétaires.
     let member_mail = email();
     let member = register(&app, &member_mail).await;
@@ -747,6 +830,16 @@ async fn execution_data_retention() {
         .status,
         StatusCode::FORBIDDEN
     );
+    // Un membre peut protéger les données, pas réactiver leur conservation.
+    let reenable = api(
+        &app,
+        "PUT",
+        &format!("/api/workspaces/{ws}/workflows/{wf}/data"),
+        Some(json!({"keepData": true})),
+        Some(&member),
+    )
+    .await;
+    assert_eq!(reenable.status, StatusCode::FORBIDDEN);
     let cleared = api(
         &app,
         "DELETE",
@@ -755,7 +848,7 @@ async fn execution_data_retention() {
         Some(&owner),
     )
     .await;
-    assert_eq!(cleared.body["deleted"], 2);
+    assert_eq!(cleared.body["deleted"], 3);
     let left = api(
         &app,
         "GET",

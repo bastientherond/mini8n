@@ -310,6 +310,48 @@ async fn first_account_then_invitations_only() {
     .await;
     assert_eq!(direct.status, StatusCode::CREATED, "{:?}", direct.body);
 
+    // Invitation d'un propriétaire rétrogradé : plus valable.
+    let promote = api(
+        app,
+        "PATCH",
+        &format!(
+            "/api/workspaces/{ws}/members/{}",
+            me.body["user"]["id"].as_str().unwrap()
+        ),
+        Some(json!({"role": "owner"})),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(promote.status, StatusCode::OK, "{:?}", promote.body);
+    api(
+        app,
+        "POST",
+        &format!("/api/workspaces/{ws}/members"),
+        Some(json!({"email": "eve@exemple.test", "role": "owner"})),
+        Some(&chloe),
+    )
+    .await;
+    let eve = env.link("eve@exemple.test", "invitation").await;
+    let chloe_id = me.body["user"]["id"].as_str().unwrap().to_string();
+    let demote = api(
+        app,
+        "PATCH",
+        &format!("/api/workspaces/{ws}/members/{chloe_id}"),
+        Some(json!({"role": "member"})),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(demote.status, StatusCode::OK);
+    let stale = api(
+        app,
+        "GET",
+        &format!("/api/auth/invitations/{eve}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(stale.status, StatusCode::BAD_REQUEST, "{:?}", stale.body);
+
     // Révocation d'une invitation : le lien ne fonctionne plus.
     api(
         app,

