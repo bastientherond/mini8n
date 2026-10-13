@@ -2,12 +2,13 @@
 	import CircleCheck from '@lucide/svelte/icons/circle-check';
 	import CircleX from '@lucide/svelte/icons/circle-x';
 	import CircleMinus from '@lucide/svelte/icons/circle-minus';
+	import Clock from '@lucide/svelte/icons/clock';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
-	import Play from '@lucide/svelte/icons/play';
-	import Settings2 from '@lucide/svelte/icons/settings-2';
 	import { cn } from '$lib/utils';
+	import { brandOfNode } from '$lib/brands';
 	import { categoryAccent, categoryBar, formatCount, iconFor } from '$lib/icons';
 	import { wf, type StepData } from '$lib/workflow.svelte';
+	import BrandLogo from './BrandLogo.svelte';
 
 	let {
 		id,
@@ -27,21 +28,26 @@
 
 	const spec = $derived(wf.spec(data.kind));
 	const result = $derived(wf.results[id]);
-	const running = $derived(wf.runningIds.has(id));
+	/** En cours d'exécution, ou en attente de son tour. */
+	const running = $derived(wf.activeId === id);
+	const queued = $derived(!running && wf.runningIds.has(id));
 	const Icon = $derived(iconFor(spec?.icon));
 	const inputs = $derived(spec?.inputs ?? []);
+	/** Logo du service pour les nœuds d'intégration (base, e-mail, messagerie). */
+	const brand = $derived(brandOfNode(data.kind, data.params.service));
 </script>
 
 <div
 	ondblclick={() => (wf.openNodeId = id)}
 	role="group"
-	title="Double-cliquez pour paramétrer"
+	title="Cliquez pour sélectionner, double-cliquez pour paramétrer"
 	class={cn(
 		'group bg-card text-card-foreground relative w-60 rounded-xl border shadow-sm transition-[box-shadow,border-color,transform] hover:shadow-md',
 		spec?.category === 'trigger' && 'rounded-l-[30px]',
 		selected && 'border-primary/70 ring-primary/20 shadow-md ring-4',
-		running && 'border-primary/60 ring-primary/15 animate-pulse ring-4',
 		result?.status === 'error' && 'border-destructive/70 ring-destructive/10 ring-4',
+		running && 'mini8n-node-running',
+		queued && 'opacity-80',
 		data.disabled && 'opacity-50 grayscale',
 	)}
 >
@@ -54,43 +60,22 @@
 		)}
 	></span>
 	<div class={cn('flex items-center gap-3 p-3 pl-4', spec?.category === 'trigger' && 'pl-4')}>
-		<div
-			class={cn(
-				'flex size-10 shrink-0 items-center justify-center rounded-xl',
-				categoryAccent[spec?.category ?? 'transform'],
-				spec?.category === 'trigger' && 'rounded-full',
-			)}
-		>
-			<Icon class="size-5" />
-		</div>
+		{#if brand}
+			<BrandLogo {brand} class="size-10 rounded-xl" />
+		{:else}
+			<div
+				class={cn(
+					'flex size-10 shrink-0 items-center justify-center rounded-xl',
+					categoryAccent[spec?.category ?? 'transform'],
+					spec?.category === 'trigger' && 'rounded-full',
+				)}
+			>
+				<Icon class="size-5" />
+			</div>
+		{/if}
 		<div class="min-w-0 flex-1">
 			<div class="truncate text-sm leading-tight font-semibold">{data.name}</div>
 			<div class="text-muted-foreground mt-0.5 truncate text-xs">{spec?.label ?? data.kind}</div>
-		</div>
-		<div class="bg-card/90 absolute -top-3.5 right-2 hidden items-center rounded-lg border p-0.5 shadow-sm group-hover:flex">
-			<button
-				class="nodrag text-muted-foreground hover:text-foreground hover:bg-accent flex size-6 items-center justify-center rounded-md"
-				title="Paramétrer"
-				aria-label="Paramétrer le nœud"
-				onclick={(e) => {
-					e.stopPropagation();
-					wf.openNodeId = id;
-				}}
-			>
-				<Settings2 class="size-3.5" />
-			</button>
-			<button
-				class="nodrag text-muted-foreground hover:text-primary hover:bg-accent flex size-6 items-center justify-center rounded-md"
-				title="Exécuter jusqu'ici"
-				aria-label="Exécuter jusqu'ici"
-				disabled={wf.running}
-				onclick={(e) => {
-					e.stopPropagation();
-					wf.run(id);
-				}}
-			>
-				<Play class="size-3.5" />
-			</button>
 		</div>
 	</div>
 
@@ -102,7 +87,10 @@
 	>
 		{#if running}
 			<LoaderCircle class="text-primary size-3.5 animate-spin" />
-			<span>Exécution…</span>
+			<span class="text-primary font-medium">Exécution…</span>
+		{:else if queued}
+			<Clock class="size-3.5" />
+			<span>En attente…</span>
 		{:else if result?.status === 'success'}
 			<CircleCheck class="size-3.5 text-emerald-500" />
 			<span class="tabular-nums">{formatCount(result.rows)} ligne{result.rows > 1 ? 's' : ''} · {result.columns.length} col.</span>
@@ -126,7 +114,7 @@
 			style="top: {top}%"
 			data-port="in-{i}"
 			data-node={id}
-			title={inputs.length > 1 ? `Entrée ${label}` : 'Entrée'}
+			title={inputs.length > 1 ? `Entrée ${label}` : spec?.optionalInput ? 'Entrée facultative' : 'Entrée'}
 		></span>
 		{#if inputs.length > 1}
 			<!-- Au-dessus de l'arrivée du lien, pour ne pas le masquer. -->

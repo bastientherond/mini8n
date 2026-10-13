@@ -5,7 +5,7 @@ use mini8n_engine::HttpRequest;
 use mini8n_engine::arrow::array::RecordBatch;
 use serde_json::{Map, Value, json};
 
-use super::template::{per_row, summary};
+use super::template::{per_row, summary_message};
 use super::{Ctx, str_param, table_of};
 use crate::net;
 
@@ -57,7 +57,7 @@ pub async fn send(
         }
         per_row(&fields, &input)?.into_iter().flatten().collect()
     } else {
-        summary(&fields, &input)?
+        summary_message(&fields, &input, &str_param(p, "row"))?
     };
     let mut report = Vec::new();
     for text in texts {

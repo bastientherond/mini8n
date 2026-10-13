@@ -28,6 +28,8 @@ export interface ParamSpec {
 	template?: boolean;
 	/** Variables propres à ce paramètre (ex. `nb_lignes`). */
 	vars?: string[];
+	/** Affiché seulement si le paramètre nommé vaut l'une de ces valeurs. */
+	showIf?: [string, string[]];
 }
 
 export type Category = 'trigger' | 'source' | 'transform' | 'combine' | 'flow' | 'integration';
@@ -39,6 +41,8 @@ export interface NodeSpec {
 	description: string;
 	icon: string;
 	inputs: string[];
+	/** L'entrée peut rester non reliée (lecture de données). */
+	optionalInput?: boolean;
 	params: ParamSpec[];
 }
 

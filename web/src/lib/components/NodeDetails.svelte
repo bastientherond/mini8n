@@ -13,8 +13,10 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { Switch } from '$lib/components/ui/switch';
 	import { cn } from '$lib/utils';
+	import { brandOfNode } from '$lib/brands';
 	import { categoryAccent, categoryLabels, formatDateTime, iconFor } from '$lib/icons';
 	import { wf } from '$lib/workflow.svelte';
+	import BrandLogo from './BrandLogo.svelte';
 	import DataPanel from './DataPanel.svelte';
 	import ParamField from './ParamField.svelte';
 
@@ -23,6 +25,7 @@
 	const node = $derived(wf.openNode);
 	const spec = $derived(node ? wf.spec(node.data.kind) : undefined);
 	const Icon = $derived(iconFor(spec?.icon));
+	const brand = $derived(node ? brandOfNode(node.data.kind, node.data.params.service) : null);
 	const columns = $derived(node ? wf.inputColumns(node.id) : []);
 	const automatic = $derived(spec?.category === 'trigger' && node?.data.kind !== 'trigger_manual');
 	const info = $derived(node ? wf.trigger(node.id) : undefined);
@@ -35,6 +38,14 @@
 				.filter((e) => e.target === node.id && (Number(e.targetHandle?.replace('in-', '') ?? 0) || 0) === i)
 				.map((e) => ({ label, id: e.source, name: wf.nodes.find((n) => n.id === e.source)?.data.name ?? e.source })),
 		);
+	});
+	/** Une entrée facultative non reliée n'occupe pas de colonne. */
+	const showInput = $derived(!!spec && spec.inputs.length > 0 && (!spec.optionalInput || sources.length > 0));
+	/** Paramètres utiles avec les valeurs actuelles (ex. « Ligne répétée » en mode récapitulatif). */
+	const params = $derived.by(() => {
+		if (!node || !spec) return [];
+		const value = (name: string) => String(node.data.params[name] ?? spec.params.find((p) => p.name === name)?.default ?? '');
+		return spec.params.filter((p) => !p.showIf || p.showIf[1].includes(value(p.showIf[0])));
 	});
 	let inputTab = $state(0);
 	$effect(() => {
@@ -68,9 +79,13 @@
 			<div class="flex flex-wrap items-center gap-3 border-b px-4 py-3">
 				<Button variant="ghost" size="sm" onclick={close}><ArrowLeft /> Canevas</Button>
 				<Separator orientation="vertical" class="h-6" />
-				<span class={cn('flex size-9 shrink-0 items-center justify-center rounded-lg', categoryAccent[spec.category])}>
-					<Icon class="size-[18px]" />
-				</span>
+				{#if brand}
+					<BrandLogo {brand} class="size-9" />
+				{:else}
+					<span class={cn('flex size-9 shrink-0 items-center justify-center rounded-lg', categoryAccent[spec.category])}>
+						<Icon class="size-[18px]" />
+					</span>
+				{/if}
 				<div class="min-w-0 flex-1">
 					<Dialog.Title class="sr-only">Paramètres de {node.data.name}</Dialog.Title>
 					<input
@@ -111,12 +126,12 @@
 			<div
 				class={cn(
 					'grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:overflow-hidden',
-					spec.inputs.length > 0
+					showInput
 						? 'lg:grid-cols-[minmax(0,1fr)_minmax(380px,460px)_minmax(0,1fr)]'
 						: 'lg:grid-cols-[minmax(380px,520px)_minmax(0,1fr)]',
 				)}
 			>
-				{#if spec.inputs.length > 0}
+				{#if showInput}
 					<section class="flex min-h-80 min-w-0 flex-col lg:min-h-0" aria-label="Entrée">
 						<div class="flex items-center gap-2 border-b px-4 py-2">
 							<h3 class="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Entrée</h3>
@@ -176,7 +191,7 @@
 								{/if}
 							</div>
 						{/if}
-						{#each spec.params as param (param.name)}
+						{#each params as param (param.name)}
 							<ParamField
 								{param}
 								value={node.data.params[param.name]}

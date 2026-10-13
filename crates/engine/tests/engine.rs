@@ -388,3 +388,79 @@ mod triggers {
         assert_eq!(cols, vec!["nom", "age", "soumis_le"]);
     }
 }
+
+#[test]
+fn progress_is_reported_node_by_node() {
+    use mini8n_engine::{Host, NodeResult, RunOptions, run_with};
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct Recorder(RefCell<Vec<String>>);
+    impl Host for Recorder {
+        fn node_started(&self, id: &str) {
+            self.0.borrow_mut().push(format!("start {id}"));
+        }
+        fn node_finished(&self, id: &str, result: &NodeResult) {
+            self.0
+                .borrow_mut()
+                .push(format!("end {id} {:?} {}", result.status, result.rows));
+        }
+    }
+
+    let wf = workflow(json!({
+        "nodes": [
+            {"id": "src", "kind": "manual", "params": {"data": SALES}},
+            {"id": "f", "kind": "filter", "params": {"condition": "prix >= 15"}}
+        ],
+        "edges": [{"source": "src", "target": "f"}]
+    }));
+    let host = Recorder::default();
+    block_on(run_with(&wf, RunOptions::default(), &host));
+    assert_eq!(
+        host.0.into_inner(),
+        [
+            "start src",
+            "end src Success 4",
+            "start f",
+            "end f Success 3"
+        ]
+    );
+}
+
+/// Les lectures de données ont une entrée facultative : non reliée, elles s'exécutent seules ;
+/// reliée à un déclencheur, elles ne s'exécutent que pour celui-ci.
+#[test]
+fn optional_input_follows_its_trigger() {
+    use mini8n_engine::data::json_to_batch;
+    use mini8n_engine::{NoHost, RunOptions, TriggerEvent, run_with};
+
+    let wf = workflow(json!({
+        "nodes": [
+            {"id": "hook", "kind": "trigger_webhook", "params": {}},
+            {"id": "cron", "kind": "trigger_schedule", "params": {}},
+            {"id": "after_cron", "kind": "manual", "params": {"data": SALES}},
+            {"id": "alone", "kind": "csv", "params": {"csv": "a\n1"}}
+        ],
+        "edges": [{"source": "cron", "target": "after_cron"}]
+    }));
+    let report = block_on(run(&wf, None));
+    assert!(report.ok, "{report:?}");
+    assert_eq!(report.results["after_cron"].rows, 4);
+    assert_eq!(rows(&report, "alone"), json!([{"a": 1}]));
+
+    let event = TriggerEvent {
+        node_id: "hook".into(),
+        data: json_to_batch(&json!([{"x": 1}])).unwrap(),
+    };
+    let report = block_on(run_with(
+        &wf,
+        RunOptions {
+            target: None,
+            trigger: Some(event),
+        },
+        &NoHost,
+    ));
+    assert!(report.ok, "{report:?}");
+    assert_eq!(report.results["after_cron"].status, Status::Skipped);
+    assert_eq!(report.results["alone"].status, Status::Success);
+}

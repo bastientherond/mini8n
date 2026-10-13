@@ -121,6 +121,40 @@ pub async fn request(p: &Params<'_>, host: &dyn Host, scope: &Scope<'_>) -> Resu
     response_to_batch(status, text, &p.str("items_path"))
 }
 
+/// Nombre maximal de requêtes en mode « pour chaque ligne ».
+pub const MAX_PER_ROW: usize = 500;
+
+/// Nœud « Requête HTTP » : une seule requête (expressions évaluées sur la première ligne
+/// de l'entrée éventuelle) ou une requête par ligne, réponses réunies dans une table.
+pub async fn run(
+    p: &Params<'_>,
+    host: &dyn Host,
+    ctx: &super::NodeCtx<'_>,
+    input: Option<&RecordBatch>,
+) -> Result<RecordBatch> {
+    let scope = ctx.scope(input);
+    let per_row = p.str("each") == "pour chaque ligne";
+    let Some(input) = input.filter(|_| per_row) else {
+        return request(p, host, &scope).await;
+    };
+    if input.num_rows() > MAX_PER_ROW {
+        return fail(format!(
+            "{MAX_PER_ROW} requêtes au maximum par exécution ({} lignes en entrée)",
+            input.num_rows()
+        ));
+    }
+    let mut out = Vec::with_capacity(input.num_rows());
+    for r in 0..input.num_rows() {
+        let row = input.slice(r, 1);
+        let scope = ctx.scope(Some(&row));
+        let batch = request(p, host, &scope)
+            .await
+            .map_err(|e| crate::error::EngineError::Msg(format!("Ligne {} : {e}", r + 1)))?;
+        out.push(batch);
+    }
+    crate::data::append_batches(&out)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 async fn send(req: HttpRequest, host: &dyn Host) -> Result<(u16, String)> {
     let res = host.http(req).await?;

@@ -91,17 +91,43 @@ async function withConnection(c, fn) {
   }
 }
 
+/**
+ * Jeux de valeurs liées : un tableau par exécution (positionnels :1, :2…).
+ * Uniquement des scalaires ; les booléens deviennent 1 / 0 (Oracle < 23ai).
+ */
+export function bindSets(binds) {
+  if (binds === undefined || binds === null) return [[]];
+  if (!Array.isArray(binds) || binds.length > 500 || !binds.every(Array.isArray)) {
+    throw new HttpError(400, 'paramètres liés invalides');
+  }
+  return binds.map((set) =>
+    set.map((v) => {
+      if (v === null || typeof v === 'string' || typeof v === 'number') return v;
+      if (typeof v === 'boolean') return v ? 1 : 0;
+      throw new HttpError(400, 'paramètre lié invalide : valeur scalaire attendue');
+    }),
+  );
+}
+
 async function query(body) {
   const sql = String(body.sql ?? '').trim();
   if (!sql) throw new HttpError(400, 'requête vide');
   const maxRows = Math.min(Math.max(Number(body.maxRows) || 10_000, 1), MAX_ROWS);
+  const sets = bindSets(body.binds);
   return withConnection(body.connection, async (conn) => {
-    const res = await conn.execute(sql.replace(/;\s*$/, ''), [], { outFormat: oracledb.OUT_FORMAT_ARRAY, maxRows });
-    return {
-      columns: (res.metaData ?? []).map((m) => m.name),
-      rows: (res.rows ?? []).map((r) => r.map(toJson)),
-      rowsAffected: res.rowsAffected ?? null,
-    };
+    let columns = [];
+    const rows = [];
+    // Une exécution par jeu de valeurs (mode « pour chaque ligne »), lignes réunies.
+    for (const binds of sets) {
+      if (rows.length >= maxRows) break;
+      const res = await conn.execute(sql.replace(/;\s*$/, ''), binds, {
+        outFormat: oracledb.OUT_FORMAT_ARRAY,
+        maxRows: maxRows - rows.length,
+      });
+      if (columns.length === 0) columns = (res.metaData ?? []).map((m) => m.name);
+      for (const r of res.rows ?? []) rows.push(r.map(toJson));
+    }
+    return { columns, rows };
   });
 }
 

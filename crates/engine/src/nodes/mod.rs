@@ -99,7 +99,10 @@ pub async fn execute(
     match node.kind.as_str() {
         "manual" => sources::manual(&p),
         "csv" => sources::csv(&p),
-        "http" => http::request(&p, host, &ctx.scope(None)).await,
+        "http" => {
+            let input: Option<RecordBatch> = inputs.next();
+            http::run(&p, host, ctx, input.as_ref()).await
+        }
         "filter" => transform::filter(&p, input()?, ctx),
         "formula" => transform::formula(&p, input()?, ctx),
         "select" => transform::select(&p, input()?),

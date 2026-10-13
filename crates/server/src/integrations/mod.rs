@@ -4,6 +4,7 @@
 //! Utilisés par l'exécuteur du serveur et, pour les exécutions lancées depuis l'éditeur,
 //! via `POST /api/workspaces/<ws>/integrations/run` (le navigateur n'a jamais accès aux secrets).
 
+mod binds;
 mod chat;
 mod email;
 mod files;
@@ -115,11 +116,11 @@ pub fn table_of(value: Value) -> Result<RecordBatch, String> {
 pub async fn run(ctx: &Ctx, node: &Node, inputs: Vec<RecordBatch>) -> Result<RecordBatch, String> {
     let p = &node.params;
     match node.kind.as_str() {
-        "postgres_query" => sql::query(ctx, sql::Db::Postgres, p).await,
+        "postgres_query" => sql::query(ctx, sql::Db::Postgres, p, inputs.into_iter().next()).await,
         "postgres_write" => sql::write(ctx, sql::Db::Postgres, p, one_input(inputs)?).await,
-        "mysql_query" => sql::query(ctx, sql::Db::MySql, p).await,
+        "mysql_query" => sql::query(ctx, sql::Db::MySql, p, inputs.into_iter().next()).await,
         "mysql_write" => sql::write(ctx, sql::Db::MySql, p, one_input(inputs)?).await,
-        "oracle_query" => oracle::query(ctx, p).await,
+        "oracle_query" => oracle::query(ctx, p, inputs.into_iter().next()).await,
         "oracle_write" => oracle::write(ctx, p, one_input(inputs)?).await,
         "file_write" => files::write(ctx, p, one_input(inputs)?).await,
         "file_read" => files::read(ctx, p).await,

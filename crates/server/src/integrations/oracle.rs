@@ -7,6 +7,9 @@ use std::time::Duration;
 use mini8n_engine::arrow::array::RecordBatch;
 use serde_json::{Map, Value, json};
 
+use mini8n_engine::expr::Scope;
+
+use super::binds::Bound;
 use super::sql::valid_table;
 use super::{Ctx, num_param, rows_of, str_param, table_of};
 
@@ -58,16 +61,31 @@ async fn connection(ctx: &Ctx, p: &Map<String, Value>) -> Result<Value, String> 
     }))
 }
 
-pub async fn query(ctx: &Ctx, p: &Map<String, Value>) -> Result<RecordBatch, String> {
+pub async fn query(
+    ctx: &Ctx,
+    p: &Map<String, Value>,
+    input: Option<RecordBatch>,
+) -> Result<RecordBatch, String> {
     let sql = str_param(p, "query");
     if sql.is_empty() {
         return Err("Requête SQL vide".into());
     }
     let max = num_param(p, "max_rows", 10_000.0).clamp(1.0, 100_000.0) as u64;
+    // Expressions {{ … }} → binds positionnels :1, :2… (valeurs liées par le pilote).
+    let bound = Bound::parse(&sql, &Scope::new(input.as_ref()))?;
+    let binds = bound.values(input.as_ref(), str_param(p, "each") == "pour chaque ligne")?;
+    if binds.is_empty() {
+        return table_of(Value::Array(vec![]));
+    }
     let res = call(
         ctx,
         "/oracle/query",
-        json!({ "connection": connection(ctx, p).await?, "sql": sql, "maxRows": max }),
+        json!({
+            "connection": connection(ctx, p).await?,
+            "sql": bound.sql(|n| format!(":{n}")),
+            "binds": binds,
+            "maxRows": max,
+        }),
     )
     .await?;
     let columns: Vec<String> = res["columns"]

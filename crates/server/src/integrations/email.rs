@@ -10,7 +10,7 @@ use mini8n_engine::arrow::array::RecordBatch;
 use mini8n_engine::data;
 use serde_json::{Map, Value, json};
 
-use super::template::{per_row, summary};
+use super::template::{per_row, summary_message};
 use super::{Ctx, str_param, table_of};
 
 const MAX_PER_ROW: usize = 100;
@@ -109,7 +109,7 @@ pub async fn send(
     }
     // Textes rendus avant tout envoi : une erreur d'expression n'envoie rien.
     let texts = if summary_mode {
-        vec![summary(&fields, &input)?]
+        vec![summary_message(&fields, &input, &str_param(p, "row"))?]
     } else {
         per_row(&fields, &input)?
     };

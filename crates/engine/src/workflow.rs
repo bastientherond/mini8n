@@ -250,6 +250,7 @@ pub async fn run_with(wf: &Workflow, opts: RunOptions<'_>, host: &dyn Host) -> R
 
     for id in &order {
         let node = by_id[id.as_str()];
+        host.node_started(id);
         let t0 = now_ms();
         let result = match run_node(wf, node, &results, opts.trigger.as_ref(), host).await {
             Ok(Outcome::Data(batch)) => match data::to_parquet(&batch) {
@@ -267,6 +268,7 @@ pub async fn run_with(wf: &Workflow, opts: RunOptions<'_>, host: &dyn Host) -> R
             Ok(Outcome::Skipped(reason)) => NodeResult::failed(Status::Skipped, reason, 0.0),
             Err(e) => NodeResult::failed(Status::Error, e.to_string(), now_ms() - t0),
         };
+        host.node_finished(id, &result);
         results.insert(id.clone(), result);
     }
 
@@ -330,7 +332,7 @@ async fn run_node(
             .filter(|e| e.target == node.id && e.input == idx)
             .collect();
         if sources.is_empty() {
-            if node.disabled {
+            if node.disabled || spec.optional_input {
                 break;
             }
             return Err(EngineError::Msg(format!(

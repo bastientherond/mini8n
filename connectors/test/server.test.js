@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import oracledb from 'oracledb';
-import { bindDefs, bindRows, connectionConfig, createApp, toJson, validColumn, validTable } from '../src/server.js';
+import { bindDefs, bindRows, bindSets, connectionConfig, createApp, toJson, validColumn, validTable } from '../src/server.js';
 
 const TOKEN = 'x'.repeat(40);
 
@@ -41,6 +41,13 @@ test('liaisons typées', () => {
   assert.equal(defs[1].type, oracledb.NUMBER);
   assert.deepEqual(bindRows(cols, rows, defs), [[null, 1, 1], ['texte long', null, 0]]);
   assert.equal(toJson(new Date('2026-10-12T08:00:00Z')), '2026-10-12T08:00:00.000Z');
+});
+
+test('paramètres liés', () => {
+  assert.deepEqual(bindSets(undefined), [[]]);
+  assert.deepEqual(bindSets([[1, 'a', null, true]]), [[1, 'a', null, 1]]);
+  assert.throws(() => bindSets([[{ x: 1 }]]), /scalaire/);
+  assert.throws(() => bindSets('1'), /invalides/);
 });
 
 test('authentification et routes', async () => {

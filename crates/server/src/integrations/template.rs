@@ -70,12 +70,52 @@ pub fn per_row(fields: &[(&str, &str)], input: &RecordBatch) -> Result<Vec<Vec<S
         .collect()
 }
 
+/// Lignes répétées au plus dans un récapitulatif.
+const MAX_LINES: usize = 1000;
+
 /// Textes rendus une seule fois (mode récapitulatif, nom de fichier…).
 pub fn summary(fields: &[(&str, &str)], input: &RecordBatch) -> Result<Vec<String>, String> {
+    summary_message(fields, input, "")
+}
+
+/// Récapitulatif d'un message : `lignes` contient le gabarit `row` rendu pour chaque ligne
+/// de l'entrée (le tableau si `row` est vide). Si aucun champ n'utilise `lignes`, elles
+/// sont ajoutées à la fin du dernier champ (le corps du message).
+pub fn summary_message(
+    fields: &[(&str, &str)],
+    input: &RecordBatch,
+    row: &str,
+) -> Result<Vec<String>, String> {
     let json_rows = rows_of(input)?;
+    let tableau = table(&json_rows, 20);
+    let lines = if row.trim().is_empty() {
+        None
+    } else {
+        let mut lines: Vec<String> = per_row(
+            &[("Ligne répétée", row)],
+            &input.slice(0, input.num_rows().min(MAX_LINES)),
+        )?
+        .into_iter()
+        .flatten()
+        .collect();
+        if input.num_rows() > MAX_LINES {
+            lines.push(format!(
+                "… et {} autre(s) ligne(s)",
+                input.num_rows() - MAX_LINES
+            ));
+        }
+        Some(lines.join("\n"))
+    };
+    let uses_lines = fields
+        .iter()
+        .any(|(_, src)| src.replace("nb_lignes", "").contains("lignes"));
     let scope = Scope::new(Some(input))
         .with_var("nb_lignes", Scalar::Int(input.num_rows() as i64))
-        .with_var("tableau", Scalar::Str(table(&json_rows, 20)));
+        .with_var(
+            "lignes",
+            Scalar::Str(lines.clone().unwrap_or_else(|| tableau.clone())),
+        )
+        .with_var("tableau", Scalar::Str(tableau));
     let templates = compile(fields, &scope)?;
     let rows = RowAccessor::new(input).map_err(|e| e.to_string())?;
     let rows = (input.num_rows() > 0).then_some(&rows);
@@ -83,7 +123,16 @@ pub fn summary(fields: &[(&str, &str)], input: &RecordBatch) -> Result<Vec<Strin
         .iter()
         .zip(fields)
         .map(|(t, (name, _))| t.render(rows, 0).map_err(|e| format!("{name} : {e}")))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()
+        .map(|mut out| {
+            if let (Some(lines), false, Some(last)) = (lines, uses_lines, out.last_mut()) {
+                if !last.is_empty() && !last.ends_with('\n') {
+                    last.push('\n');
+                }
+                last.push_str(&lines);
+            }
+            out
+        })
 }
 
 #[cfg(test)]
@@ -124,6 +173,21 @@ mod tests {
         assert_eq!(out[0], "2 lignes");
         assert!(out[1].starts_with("nom | n | vide\nAda | 3 | "));
         assert_eq!(out[2], "7");
+
+        // Ligne répétée : à la place de {{ lignes }}, sinon à la fin du message.
+        let row = "- {{ $json.nom }} : {{ $json.n }}";
+        let out = summary_message(
+            &[
+                ("Objet", "{{ nb_lignes }} lignes"),
+                ("Corps", "Liste :\n{{ lignes }}\nFin"),
+            ],
+            &input,
+            row,
+        )
+        .unwrap();
+        assert_eq!(out, ["2 lignes", "Liste :\n- Ada : 3\n- Alan : 4\nFin"]);
+        let out = summary_message(&[("Corps", "Bonjour,")], &input, row).unwrap();
+        assert_eq!(out[0], "Bonjour,\n- Ada : 3\n- Alan : 4");
 
         let e = per_row(&[("Objet", "{{ $json.nmo }}")], &input).unwrap_err();
         assert!(e.starts_with("Objet : Colonne inconnue"), "{e}");

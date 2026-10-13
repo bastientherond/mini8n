@@ -2,6 +2,7 @@
 //!
 //! - Connexion à l'adresse IP validée par la politique réseau (pas de nouvelle résolution DNS).
 //! - Lecture en protocole texte : tous les types de colonnes sont lisibles, puis convertis.
+//! - Lecture avec expressions `{{ … }}` : valeurs liées par le pilote (voir `binds`).
 //! - Écriture paramétrée ; les noms de table et de colonnes sont validés (pas d'injection SQL).
 
 use std::time::Duration;
@@ -13,6 +14,9 @@ use sqlx::mysql::{MySqlConnectOptions, MySqlConnection, MySqlSslMode};
 use sqlx::postgres::{PgConnectOptions, PgConnection, PgSslMode};
 use sqlx::{Column, Connection, Row, TypeInfo};
 
+use mini8n_engine::expr::Scope;
+
+use super::binds::{Bound, as_text};
 use super::{Ctx, num_param, rows_of, str_param, table_of};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -154,29 +158,76 @@ where
     out
 }
 
-pub async fn query(ctx: &Ctx, db: Db, p: &Map<String, Value>) -> Result<RecordBatch, String> {
+pub async fn query(
+    ctx: &Ctx,
+    db: Db,
+    p: &Map<String, Value>,
+    input: Option<RecordBatch>,
+) -> Result<RecordBatch, String> {
     let sql = str_param(p, "query");
     if sql.is_empty() {
         return Err("Requête SQL vide".into());
     }
     let max = (num_param(p, "max_rows", 10_000.0).max(1.0) as usize).min(MAX_ROWS);
+    let bound = Bound::parse(&sql, &Scope::new(input.as_ref()))?;
+    let sets = bound.values(input.as_ref(), str_param(p, "each") == "pour chaque ligne")?;
+    if !bound.is_empty() && db == Db::Postgres && !is_select(&sql) {
+        return Err(
+            "Avec des expressions {{ … }}, la requête doit être un SELECT (ou WITH … SELECT)"
+                .into(),
+        );
+    }
     let mut conn = connect(ctx, db, p).await?;
     let fut = async {
         let mut rows: Vec<Value> = Vec::new();
         match &mut conn {
+            // Sans expression : protocole texte, la requête est envoyée telle quelle.
+            _ if bound.is_empty() => {
+                for _ in &sets {
+                    fetch_text(&mut conn, &sql, max, &mut rows).await?;
+                }
+            }
             Conn::Pg(c) => {
-                let mut stream = sqlx::raw_sql(&sql).fetch(c);
-                while let Some(row) = stream.try_next().await.map_err(|e| short(&e))? {
-                    rows.push(Value::Object(row_json(&row)));
+                let sql = pg_prepare(c, &bound).await?;
+                for values in &sets {
+                    let mut q = sqlx::query(&sql);
+                    for v in values {
+                        q = q.bind(as_text(v));
+                    }
+                    let mut stream = q.fetch(&mut *c);
+                    while let Some(row) = stream.try_next().await.map_err(|e| short(&e))? {
+                        let text: String = row.try_get(0).map_err(|e| short(&e))?;
+                        rows.push(serde_json::from_str(&text).map_err(|e| e.to_string())?);
+                        if rows.len() >= max {
+                            break;
+                        }
+                    }
                     if rows.len() >= max {
                         break;
                     }
                 }
             }
-            Conn::My(c) => {
-                let mut stream = sqlx::raw_sql(&sql).fetch(c);
-                while let Some(row) = stream.try_next().await.map_err(|e| short(&e))? {
-                    rows.push(Value::Object(row_json(&row)));
+            Conn::My(_) => {
+                let sql = bound.sql(|n| format!("@mini8n_p{n}"));
+                for values in &sets {
+                    // Valeurs liées dans des variables de session, puis requête en protocole texte.
+                    let Conn::My(c) = &mut conn else {
+                        unreachable!()
+                    };
+                    for (i, v) in values.iter().enumerate() {
+                        let set = format!("SET @mini8n_p{} = ?", i + 1);
+                        let q = sqlx::query(&set);
+                        let q = match v {
+                            Value::Null => q.bind(Option::<String>::None),
+                            Value::Bool(b) => q.bind(*b),
+                            Value::Number(n) if n.is_i64() => q.bind(n.as_i64()),
+                            Value::Number(n) => q.bind(n.as_f64()),
+                            Value::String(s) => q.bind(s.clone()),
+                            other => q.bind(other.to_string()),
+                        };
+                        q.execute(&mut *c).await.map_err(|e| short(&e))?;
+                    }
+                    fetch_text(&mut conn, &sql, max, &mut rows).await?;
                     if rows.len() >= max {
                         break;
                     }
@@ -190,6 +241,78 @@ pub async fn query(ctx: &Ctx, db: Db, p: &Map<String, Value>) -> Result<RecordBa
         .map_err(|_| "requête : délai dépassé".to_string())??;
     close(conn).await;
     table_of(Value::Array(rows))
+}
+
+/// Exécute `sql` en protocole texte et ajoute ses lignes (jusqu'à `max` au total).
+async fn fetch_text(
+    conn: &mut Conn,
+    sql: &str,
+    max: usize,
+    rows: &mut Vec<Value>,
+) -> Result<(), String> {
+    if rows.len() >= max {
+        return Ok(());
+    }
+    match conn {
+        Conn::Pg(c) => {
+            let mut stream = sqlx::raw_sql(sql).fetch(c);
+            while let Some(row) = stream.try_next().await.map_err(|e| short(&e))? {
+                rows.push(Value::Object(row_json(&row)));
+                if rows.len() >= max {
+                    break;
+                }
+            }
+        }
+        Conn::My(c) => {
+            let mut stream = sqlx::raw_sql(sql).fetch(c);
+            while let Some(row) = stream.try_next().await.map_err(|e| short(&e))? {
+                rows.push(Value::Object(row_json(&row)));
+                if rows.len() >= max {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_select(sql: &str) -> bool {
+    let first = sql
+        .trim_start_matches(|c: char| c.is_whitespace() || c == '(')
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(first.as_str(), "select" | "with" | "values" | "table")
+}
+
+/// Requête PostgreSQL à paramètres. Les valeurs sont liées en texte puis converties dans
+/// le type que PostgreSQL déduit pour chaque `$n` (dates, nombres…). Les lignes reviennent
+/// en JSON (`row_to_json`), car le protocole étendu renvoie des valeurs binaires.
+async fn pg_prepare(c: &mut PgConnection, bound: &Bound) -> Result<String, String> {
+    use sqlx::Either;
+    use sqlx::Executor;
+
+    let sql = bound.sql(|n| format!("${n}"));
+    let sql = sql.trim().trim_end_matches(';');
+    let described = c.describe(sql).await.map_err(|e| short(&e))?;
+    let types: Vec<String> = match described.parameters() {
+        Some(Either::Left(types)) => types.iter().map(|t| t.name().to_lowercase()).collect(),
+        _ => vec![],
+    };
+    let typed = bound.sql(|n| match types.get(n - 1) {
+        Some(t)
+            if t != "text"
+                && t != "unknown"
+                && t.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "_[] ".contains(c)) =>
+        {
+            format!("CAST(CAST(${n} AS text) AS {t})")
+        }
+        _ => format!("CAST(${n} AS text)"),
+    });
+    let typed = typed.trim().trim_end_matches(';');
+    Ok(format!("SELECT row_to_json(t)::text FROM ({typed}) AS t"))
 }
 
 async fn close(conn: Conn) {
