@@ -169,6 +169,8 @@ async fn start(
                 node_id: d.node_id.clone(),
                 data,
             }),
+            target: None,
+            progress: None,
         })
         .await
         .map(|_| ())

@@ -17,7 +17,9 @@ use crate::workspaces::require_member;
 const MAX_DEFINITION_BYTES: usize = 1024 * 1024;
 const MAX_NODES: usize = 500;
 const MAX_EDGES: usize = 2000;
-const MAX_WORKFLOWS: i64 = 500;
+const MAX_NOTES: usize = 200;
+const MAX_NOTE_TEXT: usize = 10_000;
+pub(crate) const MAX_WORKFLOWS: i64 = 500;
 
 #[derive(Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -54,7 +56,7 @@ pub(crate) fn valid_id(s: &str) -> bool {
 }
 
 /// Contrôle la forme et la taille d'une définition de workflow.
-fn check_definition(def: &Value) -> AppResult<()> {
+pub(crate) fn check_definition(def: &Value) -> AppResult<()> {
     let bad = |m: &str| Err(AppError::bad(format!("Définition invalide : {m}")));
     if serde_json::to_vec(def).map_err(AppError::internal)?.len() > MAX_DEFINITION_BYTES {
         return bad("taille maximale de 1 Mo dépassée");
@@ -95,6 +97,21 @@ fn check_definition(def: &Value) -> AppResult<()> {
             return bad("lien mal formé");
         }
     }
+    // Notes du canevas (facultatives) : documentation affichée, ignorée à l'exécution.
+    match obj.get("notes") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(notes)) if notes.len() <= MAX_NOTES => {
+            for n in notes {
+                let text_ok = n["text"]
+                    .as_str()
+                    .is_some_and(|t| t.chars().count() <= MAX_NOTE_TEXT);
+                if !n["id"].as_str().is_some_and(valid_id) || !text_ok {
+                    return bad("note mal formée");
+                }
+            }
+        }
+        Some(_) => return bad(&format!("{MAX_NOTES} notes au maximum")),
+    }
     Ok(())
 }
 
@@ -116,7 +133,7 @@ pub async fn list(
     ))
 }
 
-async fn fetch(state: &AppState, ws: Uuid, id: Uuid) -> AppResult<WorkflowDoc> {
+pub(crate) async fn fetch(state: &AppState, ws: Uuid, id: Uuid) -> AppResult<WorkflowDoc> {
     sqlx::query_as("SELECT id, name, version, active, definition, updated_at FROM workflows WHERE id = $1 AND workspace_id = $2")
         .bind(id)
         .bind(ws)
@@ -262,5 +279,9 @@ mod tests {
             check_definition(&json!({"nodes": [], "edges": [{"source": "a", "target": "../x"}]}))
                 .is_err()
         );
+        let note = |id: &str, text: &str| json!({"nodes": [], "edges": [], "notes": [{"id": id, "text": text}]});
+        assert!(check_definition(&note("note-1", "**Info**")).is_ok());
+        assert!(check_definition(&note("../x", "")).is_err());
+        assert!(check_definition(&json!({"nodes": [], "edges": [], "notes": {}})).is_err());
     }
 }

@@ -108,6 +108,17 @@ Et pour les cas plus fins, des **petites formules** (comme dans un tableur) perm
 de calculer une colonne, mettre en forme une date ou composer un message personnalisé —
 avec suggestions et aperçu du résultat pendant la saisie.
 
+## 🤖 Déboguer avec Claude
+
+Connectez **Claude** (Claude Code, Claude Desktop) ou une autre IA compatible MCP à votre
+workspace : elle lit vos workflows, les exécute, regarde les données de chaque étape et
+corrige ce qui ne va pas. Vous la voyez travailler **en direct** dans l'éditeur, comme un
+collègue. Créez un jeton dans **Paramètres → Accès des IA**, puis :
+
+```bash
+claude mcp add --transport http mini8n http://localhost:8080/api/mcp --header "Authorization: Bearer m8n_…"
+```
+
 ## 🚀 Envie d'essayer ?
 
 L'installation, la configuration, la sécurité et le fonctionnement interne sont décrits

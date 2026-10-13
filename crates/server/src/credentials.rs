@@ -230,7 +230,10 @@ fn summary(kind: &Kind, data: &Map<String, Value>) -> Value {
     }
     if kind.kind == "chat_webhook" {
         // Seul le nom du service est exposé (pour son logo) ; l'URL reste secrète.
-        let service = data.get("url").and_then(Value::as_str).and_then(chat_service);
+        let service = data
+            .get("url")
+            .and_then(Value::as_str)
+            .and_then(chat_service);
         s.insert("service".into(), json!(service));
     }
     Value::Object(s)
@@ -249,7 +252,11 @@ pub fn chat_service(url: &str) -> Option<&'static str> {
         Some("Slack")
     } else if ends("discord.com") || ends("discordapp.com") {
         Some("Discord")
-    } else if ends("webhook.office.com") || ends("logic.azure.com") || ends("powerautomate.com") || ends("office365.com") {
+    } else if ends("webhook.office.com")
+        || ends("logic.azure.com")
+        || ends("powerautomate.com")
+        || ends("office365.com")
+    {
         Some("Microsoft Teams")
     } else if ends("chat.googleapis.com") {
         Some("Google Chat")
@@ -329,7 +336,10 @@ struct UsageRow {
 }
 
 /// Références aux identifiants dans les définitions des workflows du workspace, par identifiant.
-async fn usages(db: &PgPool, ws: Uuid) -> AppResult<std::collections::HashMap<String, Vec<CredentialUsage>>> {
+async fn usages(
+    db: &PgPool,
+    ws: Uuid,
+) -> AppResult<std::collections::HashMap<String, Vec<CredentialUsage>>> {
     let rows: Vec<UsageRow> = sqlx::query_as(
         "SELECT n->'data'->'params'->>'credential' AS credential,
                 w.id AS workflow_id, w.name AS workflow_name,
@@ -345,7 +355,8 @@ async fn usages(db: &PgPool, ws: Uuid) -> AppResult<std::collections::HashMap<St
     .bind(ws)
     .fetch_all(db)
     .await?;
-    let mut out: std::collections::HashMap<String, Vec<CredentialUsage>> = std::collections::HashMap::new();
+    let mut out: std::collections::HashMap<String, Vec<CredentialUsage>> =
+        std::collections::HashMap::new();
     for r in rows {
         out.entry(r.credential).or_default().push(r.usage);
     }
@@ -567,13 +578,34 @@ mod tests {
 
     #[test]
     fn chat_service_is_detected_from_the_webhook_host() {
-        assert_eq!(chat_service("https://hooks.slack.com/services/T0/B0/x"), Some("Slack"));
-        assert_eq!(chat_service("https://discord.com/api/webhooks/1/abc"), Some("Discord"));
-        assert_eq!(chat_service("https://discordapp.com/api/webhooks/1/abc"), Some("Discord"));
-        assert_eq!(chat_service("https://contoso.webhook.office.com/webhookb2/x"), Some("Microsoft Teams"));
-        assert_eq!(chat_service("https://prod-12.westeurope.logic.azure.com:443/workflows/x"), Some("Microsoft Teams"));
-        assert_eq!(chat_service("https://chat.googleapis.com/v1/spaces/X/messages?key=k"), Some("Google Chat"));
-        assert_eq!(chat_service("https://chat.exemple.com/hooks/abc"), Some("Mattermost"));
+        assert_eq!(
+            chat_service("https://hooks.slack.com/services/T0/B0/x"),
+            Some("Slack")
+        );
+        assert_eq!(
+            chat_service("https://discord.com/api/webhooks/1/abc"),
+            Some("Discord")
+        );
+        assert_eq!(
+            chat_service("https://discordapp.com/api/webhooks/1/abc"),
+            Some("Discord")
+        );
+        assert_eq!(
+            chat_service("https://contoso.webhook.office.com/webhookb2/x"),
+            Some("Microsoft Teams")
+        );
+        assert_eq!(
+            chat_service("https://prod-12.westeurope.logic.azure.com:443/workflows/x"),
+            Some("Microsoft Teams")
+        );
+        assert_eq!(
+            chat_service("https://chat.googleapis.com/v1/spaces/X/messages?key=k"),
+            Some("Google Chat")
+        );
+        assert_eq!(
+            chat_service("https://chat.exemple.com/hooks/abc"),
+            Some("Mattermost")
+        );
         assert_eq!(chat_service("https://exemple.com/autre"), None);
         assert_eq!(chat_service("http://hooks.slack.com/x"), None);
         // Un hôte qui imite un domaine connu n'est pas reconnu.

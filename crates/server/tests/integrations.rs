@@ -290,18 +290,33 @@ async fn postgres_write_query_and_upsert() {
 
     // Paramètres liés : la valeur n'est jamais insérée dans le SQL.
     let input = json!([{"id": 3, "depuis": "2026-09-01"}, {"id": 1, "depuis": "2026-09-01"}]);
-    let query = format!("SELECT id, nom FROM {table} WHERE id = {{{{ $json.id }}}} AND cree >= '{{{{ $json.depuis }}}}'");
+    let query = format!(
+        "SELECT id, nom FROM {table} WHERE id = {{{{ $json.id }}}} AND cree >= '{{{{ $json.depuis }}}}'"
+    );
     let read = env
-        .run("postgres_query", json!({"credential": cred, "query": query}), vec![input.clone()])
+        .run(
+            "postgres_query",
+            json!({"credential": cred, "query": query}),
+            vec![input.clone()],
+        )
         .await
         .unwrap();
     assert_eq!(read, json!([]), "3 n'a pas de date de création");
-    let query = format!("SELECT id, nom FROM {table} WHERE id = {{{{ $json.id }}}} OR nom = {{{{ \"x' OR '1'='1\" }}}}");
+    let query = format!(
+        "SELECT id, nom FROM {table} WHERE id = {{{{ $json.id }}}} OR nom = {{{{ \"x' OR '1'='1\" }}}}"
+    );
     let read = env
-        .run("postgres_query", json!({"credential": cred, "query": query, "each": "pour chaque ligne"}), vec![input])
+        .run(
+            "postgres_query",
+            json!({"credential": cred, "query": query, "each": "pour chaque ligne"}),
+            vec![input],
+        )
         .await
         .unwrap();
-    assert_eq!(read, json!([{"id": 3, "nom": "Écran"}, {"id": 1, "nom": "Clavier"}]));
+    assert_eq!(
+        read,
+        json!([{"id": 3, "nom": "Écran"}, {"id": 1, "nom": "Clavier"}])
+    );
 
     // Injection via le nom de table : refusée.
     let err = env

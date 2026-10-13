@@ -91,6 +91,8 @@ crates/server/          API Rust (axum + sqlx)
   src/workspaces.rs     workspaces, membres, rôles
   src/workflows.rs      stockage des workflows (version optimiste)
   src/live.rs           collaboration en direct (WebSocket : présence, sauvegardes diffusées)
+  src/mcp/              serveur MCP : IA connectées (outils, édition du graphe, présence)
+  src/tokens.rs         jetons d'accès personnels des IA
   src/triggers.rs       activation, webhooks et formulaires publics, exécution à distance
   src/runner.rs         exécution côté serveur (pool de threads, sous-workflows, erreurs)
   src/scheduler.rs      planification et surveillance d'API
@@ -101,7 +103,7 @@ crates/server/          API Rust (axum + sqlx)
   src/integrations/     PostgreSQL / MySQL (sqlx), Oracle (connecteur), fichiers, e-mail, messageries
   src/executions.rs     historique des exécutions
   src/security.rs       anti-CSRF, limitation de débit, IP cliente
-  tests/api.rs          tests d'intégration (PostgreSQL) ; tests/live.rs : WebSocket
+  tests/api.rs          tests d'intégration (PostgreSQL) ; tests/live.rs : WebSocket ; tests/mcp.rs : IA
 web/                    interface Svelte 5 + Vite + Tailwind 4 + shadcn-svelte
   nginx/                configuration nginx (en-têtes de sécurité, proxy)
   src/lib/api.ts        client API ; session.svelte.ts : compte et workspaces
@@ -321,6 +323,31 @@ Les données elles-mêmes restent dans le navigateur de celui qui exécute.
   qui impose HTTPS — y compris en local. Pour quelques dizaines de petits messages par
   seconde, WebSocket offre la même réactivité. Avec le profil `tls`, la page elle-même est
   déjà servie en HTTP/3 (QUIC) par Caddy.
+
+### IA connectées (MCP)
+
+Une IA compatible [MCP](https://modelcontextprotocol.io) — Claude Code, Claude Desktop… — se
+connecte à un workspace pour **déboguer en direct** : elle apparaît dans l'éditeur comme un
+participant (pastille 🤖, nœud examiné, exécution animée) et ses modifications sont
+enregistrées puis diffusées comme celles d'un membre (fusion avec les modifications locales).
+
+- **Connexion** : Paramètres → Accès des IA → créer un jeton (`m8n_…`, affiché une fois), puis
+  `claude mcp add --transport http mini8n https://<site>/api/mcp --header "Authorization: Bearer m8n_…"`.
+  En développement : `http://localhost:5173/api/mcp` (proxy Vite).
+- **Transport** : « Streamable HTTP » sans session, `POST /api/mcp` (un message JSON-RPC par
+  requête, réponse JSON ; pas de flux SSE). Protocoles 2025-06-18, 2025-03-26, 2024-11-05.
+- **Outils** : `list_workflows`, `get_workflow`, `create_workflow`, `list_node_types`,
+  `list_credentials` (nom et type des identifiants, jamais les secrets) ; `run_workflow` (sur le
+  serveur, tout ou jusqu'à un nœud, données de déclencheur au choix ; statut, colonnes, erreur
+  et échantillon de chaque nœud), `get_run_result`, `get_node_output` (pagination, 30 min) ;
+  `update_node`, `add_node`, `delete_node`, `connect_nodes`, `disconnect_nodes` (mêmes règles
+  que l'éditeur : paramètres connus, pas de boucle) ; `list_executions`, `get_execution`.
+- **Sécurité** : jeton personnel limité à un workspace, stocké haché (SHA-256), révocable,
+  expiration au choix ; appartenance au workspace revérifiée à chaque appel ; jamais de
+  cookie (pas de CSRF), `Origin` refusé s'il n'est pas celui du site (DNS rebinding) ;
+  120 appels par minute et par jeton. L'IA agit au nom du membre : les nœuds d'envoi
+  (e-mails, messages, écritures en base) agissent réellement quand elle exécute. Les
+  identifiants restent chiffrés et ne sont jamais exposés.
 
 ## Expressions
 
