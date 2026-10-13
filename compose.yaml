@@ -101,6 +101,9 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM: ${SMTP_FROM:-}
+      # Supervision : /api/metrics (Prometheus) accessible avec ce jeton (32 caractères min.).
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-10}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
       TRUST_PROXY: "true"
       RUST_LOG: ${RUST_LOG:-info,tower_http=info,sqlx=warn}

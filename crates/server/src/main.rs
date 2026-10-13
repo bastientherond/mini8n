@@ -64,7 +64,7 @@ async fn main() {
     let mut attempt = 0;
     let db = loop {
         match PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(config.database_max_connections)
             .acquire_timeout(Duration::from_secs(5))
             .connect(&config.database_url)
             .await

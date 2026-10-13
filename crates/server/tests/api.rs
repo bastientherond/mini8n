@@ -24,6 +24,7 @@ async fn setup_with(cookie_secure: CookieSecure, trust_proxy: bool) -> Option<Ro
     let config = Config {
         bind: "127.0.0.1:0".parse().unwrap(),
         database_url: url,
+        database_max_connections: 10,
         public_origins: vec![ORIGIN.into()],
         cookie_secure,
         trust_proxy,
@@ -39,6 +40,7 @@ async fn setup_with(cookie_secure: CookieSecure, trust_proxy: bool) -> Option<Ro
         credentials_key: [42u8; 32],
         connectors_url: None,
         connectors_token: None,
+        metrics_token: None,
     };
     Some(app(AppState::new(db, config)))
 }

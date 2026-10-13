@@ -34,6 +34,7 @@ async fn setup() -> Option<Server> {
     let config = Config {
         bind: "127.0.0.1:0".parse().unwrap(),
         database_url: url,
+        database_max_connections: 10,
         public_origins: vec![ORIGIN.into()],
         cookie_secure: CookieSecure::Never,
         trust_proxy: false,
@@ -49,6 +50,7 @@ async fn setup() -> Option<Server> {
         credentials_key: [42u8; 32],
         connectors_url: None,
         connectors_token: None,
+        metrics_token: None,
     };
     let app = app(AppState::new(db, config));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

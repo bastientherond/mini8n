@@ -32,6 +32,8 @@ pub struct MailConfig {
 pub struct Config {
     pub bind: SocketAddr,
     pub database_url: String,
+    /// Taille maximale du pool de connexions PostgreSQL.
+    pub database_max_connections: u32,
     /// Origine publique du site (ex. `https://mini8n.exemple.com`). Les requêtes
     /// modifiant des données doivent porter cet en-tête `Origin` (anti-CSRF).
     pub public_origins: Vec<String>,
@@ -64,6 +66,8 @@ pub struct Config {
     /// Service « connectors » (Oracle) : URL interne et jeton partagé.
     pub connectors_url: Option<String>,
     pub connectors_token: Option<String>,
+    /// Jeton d'accès à `/api/metrics` (Prometheus) ; sans lui, l'URL n'existe pas.
+    pub metrics_token: Option<String>,
 }
 
 fn env(key: &str) -> Option<String> {
@@ -114,6 +118,10 @@ impl Config {
                 .parse()
                 .map_err(|e| format!("BIND_ADDR invalide : {e}"))?,
             database_url,
+            database_max_connections: env("DATABASE_MAX_CONNECTIONS")
+                .and_then(|v| v.parse().ok())
+                .filter(|n| (2..=200).contains(n))
+                .unwrap_or(10),
             public_origins,
             cookie_secure: match env("COOKIE_SECURE")
                 .map(|v| v.to_ascii_lowercase())
@@ -160,6 +168,12 @@ impl Config {
             )?,
             connectors_url: env("CONNECTORS_URL").map(|u| u.trim_end_matches('/').to_string()),
             connectors_token: secret("CONNECTORS_TOKEN")?,
+            metrics_token: match secret("METRICS_TOKEN")? {
+                Some(t) if t.len() < 32 => {
+                    return Err("METRICS_TOKEN : 32 caractères minimum".into());
+                }
+                t => t,
+            },
         })
     }
 }

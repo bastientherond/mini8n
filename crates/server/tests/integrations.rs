@@ -43,6 +43,7 @@ async fn setup(allow_private: bool) -> Option<Env> {
     let config = Config {
         bind: "127.0.0.1:0".parse().unwrap(),
         database_url: url,
+        database_max_connections: 10,
         public_origins: vec![ORIGIN.into()],
         cookie_secure: CookieSecure::Always,
         trust_proxy: false,
@@ -58,6 +59,7 @@ async fn setup(allow_private: bool) -> Option<Env> {
         credentials_key: [42u8; 32],
         connectors_url: std::env::var("TEST_CONNECTORS_URL").ok(),
         connectors_token: std::env::var("TEST_CONNECTORS_TOKEN").ok(),
+        metrics_token: None,
     };
     let state = AppState::new(db.clone(), config);
     let app = app(state);

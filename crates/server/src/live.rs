@@ -480,6 +480,12 @@ impl Hub {
         rooms.retain(|_, r| !r.peers.is_empty());
     }
 
+    /// Salles ouvertes et participants connectés, IA comprises (supervision).
+    pub fn totals(&self) -> (usize, usize) {
+        let rooms = self.rooms();
+        (rooms.len(), rooms.values().map(|r| r.peers.len()).sum())
+    }
+
     /// Nombre de clients connectés à un workflow.
     pub fn count(&self, workflow: Uuid) -> usize {
         self.rooms().get(&workflow).map_or(0, |r| r.peers.len())

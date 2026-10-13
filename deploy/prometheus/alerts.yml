@@ -1,0 +1,51 @@
+# Règles d'alerte Prometheus pour mini8n (à charger avec rule_files).
+# Collecte : job « mini8n », https://<site>/api/metrics, en-tête Authorization: Bearer <METRICS_TOKEN>.
+groups:
+  - name: mini8n
+    rules:
+      - alert: Mini8nInjoignable
+        expr: up{job="mini8n"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "mini8n ne répond plus"
+          description: "Les métriques ne sont plus collectées depuis 2 minutes (serveur arrêté, proxy ou réseau)."
+
+      - alert: Mini8nBaseInjoignable
+        expr: mini8n_database_up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "PostgreSQL injoignable"
+          description: "L'API ne peut plus joindre sa base : connexions, sauvegardes et exécutions échouent."
+
+      - alert: Mini8nFileSaturee
+        expr: mini8n_runner_queue / mini8n_runner_queue_capacity > 0.8
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "File d'exécution presque pleine"
+          description: "{{ $value | humanizePercentage }} de la file occupée : au-delà, les déclenchements sont refusés (429). Augmenter RUNNER_THREADS ou réduire la charge."
+
+      - alert: Mini8nExecutionsEnEchec
+        expr: increase(mini8n_executions_24h{status="error"}[15m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Exécutions automatiques en échec"
+          description: "{{ $value }} nouvel(s) échec(s) en 15 minutes : voir la page Exécutions (ou le déclencheur « Sur erreur »)."
+
+      - alert: Mini8nExecutionsBloquees
+        expr: mini8n_executions_24h{status="running"} > 0 and mini8n_runner_queue == 0
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "Exécutions en cours depuis longtemps"
+          description: "Des exécutions restent « en cours » sans file d'attente : vérifier EXECUTION_TIMEOUT_SECS et les journaux du serveur."
+
+      - alert: Mini8nPoolSature
+        expr: mini8n_database_connections{state="idle"} == 0 and on() mini8n_database_connections{state="open"} >= on() mini8n_database_connections_max
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Pool de connexions PostgreSQL saturé"
+          description: "Toutes les connexions sont occupées depuis 10 minutes : les requêtes attendent (voir DATABASE_MAX_CONNECTIONS)."

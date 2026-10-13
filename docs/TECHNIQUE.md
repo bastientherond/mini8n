@@ -83,6 +83,31 @@ apparaît dans `docker compose logs backup`.
 - **Tester** : restaurez une sauvegarde de temps en temps (par exemple sur une machine de
   test) — une sauvegarde jamais restaurée n'est qu'une hypothèse.
 
+## Supervision
+
+- **Santé** : `GET /api/health` (base joignable) ; chaque conteneur a son healthcheck.
+- **Journaux** : `LOG_FORMAT=json` pour un collecteur (Loki, Elastic…), niveau via `RUST_LOG`.
+- **Métriques** : `GET /api/metrics` au format Prometheus, avec l'en-tête
+  `Authorization: Bearer <METRICS_TOKEN>` (sans jeton configuré, l'URL répond 404) :
+  base joignable et pool de connexions, file d'exécution, exécutions des dernières 24 h par
+  statut, date du dernier échec, workflows actifs, collaboration en direct.
+- **Alertes** : `deploy/prometheus/alerts.yml` — serveur ou base injoignable, file presque
+  pleine, nouvelles exécutions en échec, exécutions bloquées, pool saturé.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: mini8n
+    scheme: https
+    metrics_path: /api/metrics
+    authorization: { credentials_file: /etc/prometheus/mini8n_token }
+    static_configs: [{ targets: ["mini8n.exemple.com"] }]
+rule_files: [alerts.yml]
+```
+
+Côté métier, le déclencheur « Sur erreur » permet aussi d'être prévenu (e-mail, Slack…) de
+l'échec d'un workflow précis.
+
 ## Mises à jour et retour arrière
 
 En production, on déploie **les images construites par la CI**, jamais une copie de travail
@@ -157,6 +182,7 @@ crates/server/          API Rust (axum + sqlx)
   src/files.rs          fichiers du workspace
   src/integrations/     PostgreSQL / MySQL (sqlx), Oracle (connecteur), fichiers, e-mail, messageries
   src/executions.rs     historique des exécutions
+  src/metrics.rs        métriques Prometheus (/api/metrics)
   src/security.rs       anti-CSRF, limitation de débit, IP cliente
   tests/api.rs          tests d'intégration (PostgreSQL) ; tests/live.rs : WebSocket ; tests/mcp.rs : IA
 web/                    interface Svelte 5 + Vite + Tailwind 4 + shadcn-svelte

@@ -12,6 +12,7 @@ pub mod integrations;
 pub mod live;
 pub mod mailer;
 pub mod mcp;
+pub mod metrics;
 pub mod net;
 pub mod runner;
 pub mod schedule;
@@ -150,6 +151,8 @@ pub fn app(state: AppState) -> Router {
 
     let api = Router::new()
         .route("/health", get(health))
+        // Supervision (Prometheus) : jeton METRICS_TOKEN requis.
+        .route("/metrics", get(metrics::metrics))
         .route("/auth/config", get(auth::public_config))
         .route("/auth/register", post(auth::register))
         .route("/auth/login", post(auth::login))

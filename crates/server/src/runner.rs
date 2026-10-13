@@ -162,6 +162,12 @@ impl Runner {
         Runner { inner }
     }
 
+    /// Exécutions en attente dans la file, et capacité de la file (supervision).
+    pub fn queue(&self) -> (usize, usize) {
+        let free = self.inner.tx.capacity();
+        (QUEUE_CAPACITY - free, QUEUE_CAPACITY)
+    }
+
     pub fn db(&self) -> &PgPool {
         &self.inner.db
     }

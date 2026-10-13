@@ -41,6 +41,7 @@ async fn setup() -> Option<Env> {
     let config = Config {
         bind: "127.0.0.1:0".parse().unwrap(),
         database_url: db_url,
+        database_max_connections: 10,
         public_origins: vec![ORIGIN.into()],
         cookie_secure: CookieSecure::Never,
         trust_proxy: false,
@@ -56,6 +57,7 @@ async fn setup() -> Option<Env> {
         credentials_key: [42u8; 32],
         connectors_url: None,
         connectors_token: None,
+        metrics_token: None,
     };
     let mut state = AppState::new(db, config);
     let (mailer, outbox) = Mailer::memory();
