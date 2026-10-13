@@ -34,6 +34,7 @@ async fn setup_with(cookie_secure: CookieSecure, trust_proxy: bool) -> Option<Ro
         execution_timeout_secs: 30,
         executions_retention_days: 30,
         network_allowlist: vec![],
+        localhost_alias: None,
         credentials_key: [42u8; 32],
         connectors_url: None,
         connectors_token: None,

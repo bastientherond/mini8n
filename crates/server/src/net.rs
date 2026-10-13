@@ -67,6 +67,21 @@ enum AllowRule {
 pub struct NetPolicy {
     allow_private: bool,
     allowlist: Vec<AllowRule>,
+    /// Hôte vers lequel rediriger `localhost` (ex. `host.docker.internal` : dans un
+    /// conteneur, `localhost` désignerait le serveur lui-même et non la machine hôte).
+    localhost_alias: Option<String>,
+}
+
+/// `localhost`, `*.localhost`, `127.x.x.x` ou `::1` ?
+pub fn is_loopback_host(host: &str) -> bool {
+    let h = host
+        .trim()
+        .trim_end_matches('.')
+        .trim_matches(['[', ']'])
+        .to_ascii_lowercase();
+    h == "localhost"
+        || h.ends_with(".localhost")
+        || h.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 fn in_cidr(ip: IpAddr, net: IpAddr, prefix: u8) -> bool {
@@ -111,6 +126,23 @@ impl NetPolicy {
         Self {
             allow_private,
             allowlist,
+            localhost_alias: None,
+        }
+    }
+
+    /// Redirige `localhost` vers cet hôte (vide : aucune redirection).
+    pub fn with_localhost_alias(mut self, alias: Option<String>) -> Self {
+        self.localhost_alias = alias
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty());
+        self
+    }
+
+    /// Hôte réellement contacté (`localhost` éventuellement redirigé).
+    pub fn target_host(&self, host: &str) -> String {
+        match &self.localhost_alias {
+            Some(alias) if is_loopback_host(host) => alias.clone(),
+            _ => host.trim().to_string(),
         }
     }
 
@@ -126,20 +158,45 @@ impl NetPolicy {
 
     /// Résout `host` et renvoie une adresse autorisée (bases de données, SMTP…).
     pub async fn resolve(&self, host: &str, port: u16) -> Result<SocketAddr, String> {
-        let host = host.trim();
-        if host.is_empty() {
+        let asked = host.trim();
+        if asked.is_empty() {
             return Err("hôte manquant".into());
         }
-        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
+        let target = self.target_host(asked);
+        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((target.as_str(), port))
             .await
-            .map_err(|e| format!("résolution de « {host} » impossible : {e}"))?
+            .map_err(|e| format!("résolution de « {target} » impossible : {e}"))?
             .collect();
         addrs
             .into_iter()
-            .find(|a| self.allows(host, a.ip()))
-            .ok_or_else(|| {
-                format!("adresse non autorisée pour « {host} » (réseau privé : ajoutez-le à NETWORK_ALLOWLIST)")
-            })
+            .find(|a| self.allows(&target, a.ip()))
+            .ok_or_else(|| self.denied_message(asked))
+    }
+
+    /// Message d'erreur d'une adresse refusée, avec le conseil adapté.
+    pub fn denied_message(&self, host: &str) -> String {
+        match &self.localhost_alias {
+            Some(alias) if is_loopback_host(host) => format!(
+                "« {host} » est redirigé vers « {alias} » (la machine qui héberge Docker) : \
+                 ajoutez « {alias} » à NETWORK_ALLOWLIST pour l'autoriser"
+            ),
+            _ => denied_message(host),
+        }
+    }
+}
+
+/// Message d'erreur d'une adresse refusée, avec le conseil adapté.
+pub fn denied_message(host: &str) -> String {
+    if is_loopback_host(host) {
+        format!(
+            "« {host} » désigne le serveur mini8n lui-même (il tourne dans un conteneur), pas votre ordinateur : \
+             pour une base installée sur votre machine, utilisez l'hôte « host.docker.internal » \
+             et ajoutez-le à NETWORK_ALLOWLIST"
+        )
+    } else {
+        format!(
+            "adresse non autorisée pour « {host} » (réseau privé : ajoutez-le à NETWORK_ALLOWLIST)"
+        )
     }
 }
 
@@ -192,8 +249,17 @@ fn check_url(url: &reqwest::Url, policy: &NetPolicy) -> Result<(), String> {
 }
 
 /// Exécute une requête HTTP pour un workflow (délai de 30 s, réponse limitée à 50 Mo).
-pub async fn fetch(req: HttpRequest, policy: &NetPolicy) -> Result<HttpResponse, String> {
-    let url = Url::parse(&req.url).map_err(|e| format!("URL invalide : {e}"))?;
+pub async fn fetch(mut req: HttpRequest, policy: &NetPolicy) -> Result<HttpResponse, String> {
+    let mut url = Url::parse(&req.url).map_err(|e| format!("URL invalide : {e}"))?;
+    // `localhost` → hôte de Docker si une redirection est configurée.
+    if let Some(host) = url.host_str().map(str::to_string) {
+        let target = policy.target_host(&host);
+        if target != host {
+            url.set_host(Some(&target))
+                .map_err(|e| format!("URL invalide : {e}"))?;
+            req.url = url.to_string();
+        }
+    }
     check_url(&url, policy)?;
     let redirect_policy = policy.clone();
     let method = reqwest::Method::from_bytes(req.method.as_bytes())
@@ -334,6 +400,33 @@ mod tests {
         assert!(p.allows("x", "192.168.1.7".parse().unwrap()));
         assert!(!p.allows("x", "192.168.1.8".parse().unwrap()));
         assert!(p.allows("x", "8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn localhost_alias() {
+        let p = NetPolicy::new(false, &["host.docker.internal".into()])
+            .with_localhost_alias(Some("host.docker.internal".into()));
+        assert_eq!(p.target_host("localhost"), "host.docker.internal");
+        assert_eq!(p.target_host("127.0.0.1"), "host.docker.internal");
+        assert_eq!(p.target_host("db.interne"), "db.interne");
+        assert!(p.allows("host.docker.internal", "192.168.5.2".parse().unwrap()));
+        let none =
+            NetPolicy::new(false, &[]).with_localhost_alias(Some("host.docker.internal".into()));
+        assert!(
+            none.denied_message("localhost")
+                .contains("ajoutez « host.docker.internal »")
+        );
+        assert_eq!(
+            NetPolicy::new(false, &[]).target_host("localhost"),
+            "localhost"
+        );
+    }
+
+    #[test]
+    fn localhost_gets_docker_advice() {
+        assert!(denied_message("localhost").contains("host.docker.internal"));
+        assert!(denied_message("127.0.0.1").contains("host.docker.internal"));
+        assert!(!denied_message("10.0.0.5").contains("host.docker.internal"));
     }
 
     #[tokio::test]

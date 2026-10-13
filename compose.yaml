@@ -77,10 +77,15 @@ services:
       HTTP_ALLOW_PRIVATE: "false"
       # Hôtes / réseaux privés autorisés pour les intégrations (ex. "erp.interne,10.20.0.0/16").
       NETWORK_ALLOWLIST: ${NETWORK_ALLOWLIST:-}
+      # Dans un conteneur, « localhost » serait le serveur lui-même : redirigé vers la
+      # machine hôte (à autoriser explicitement dans NETWORK_ALLOWLIST).
+      LOCALHOST_ALIAS: ${LOCALHOST_ALIAS:-host.docker.internal}
       CREDENTIALS_KEY_FILE: /run/secrets/credentials_key
       CONNECTORS_URL: http://connectors:8090
       CONNECTORS_TOKEN_FILE: /run/secrets/connectors_token
     secrets: [db_password, credentials_key, connectors_token]
+    # host.docker.internal = machine hôte, aussi sous Linux (Docker ≥ 20.10).
+    extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
       db: { condition: service_healthy }
       connectors: { condition: service_healthy }

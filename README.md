@@ -109,7 +109,8 @@ web/                    interface Svelte 5 + Vite + Tailwind 4 + shadcn-svelte
   src/lib/components/
     shell/              barre du haut, barre latérale, menu avatar, palette ⌘K, dialogues
     pages/              accueil, workflows, membres, paramètres, compte
-    Editor.svelte       éditeur de workflow (canevas, palette de nœuds, inspecteur, données)
+    Editor.svelte       éditeur de workflow (canevas, palette de nœuds, vue détaillée)
+    canvas/             canevas maison (nœuds, liens routés, mini-carte, commandes)
 connectors/             service Node « connectors » (Oracle, node-oracledb thin)
 deploy/Caddyfile        reverse proxy TLS
 compose.yaml            orchestration
@@ -248,6 +249,25 @@ entrée à gauche, paramètres au centre, sortie à droite.
 Un nœud **désactivé** transmet son entrée telle quelle. « Exécuter jusqu'ici » n'exécute
 que le nœud et ses ancêtres.
 
+## Canevas
+
+Le canevas est fait maison (`web/src/lib/canvas`, `web/src/lib/components/canvas`) :
+
+- **Liens routés** : tracés à angles droits qui contournent les nœuds (plus court chemin
+  sur une grille construite à partir des nœuds, virages pénalisés), liens parallèles
+  écartés en couloirs, petits ponts aux croisements, virages arrondis. Après une
+  exécution, les liens prennent la couleur des données et affichent le nombre de lignes.
+- **Ranger** (bouton de la barre d'outils, `Maj + Alt + T`) : nœuds rangés en colonnes
+  selon leur profondeur, ordre limitant les croisements (l'entrée A est alimentée par le
+  nœud du haut), chaque nœud aligné sur ses voisins, positions sur la grille. Annulable.
+- **Interactions** : glisser le fond (ou molette) pour se déplacer, `Ctrl/⌘ + molette` ou
+  pincement pour zoomer, `Maj + glisser` pour sélectionner plusieurs nœuds, `Maj + clic`
+  pour ajouter à la sélection, `Alt` pendant un déplacement pour ignorer la grille,
+  tirer depuis un port (ou le lâcher sur un nœud) pour relier — les boucles sont refusées,
+  `Suppr` pour supprimer, `⌘/Ctrl + Z` / `Maj + ⌘/Ctrl + Z` pour annuler / rétablir,
+  `⌘/Ctrl + A` pour tout sélectionner, `Maj + 1` pour tout afficher.
+- Le routage est testé à part : `npm test` (aucune dépendance, `node --test`).
+
 ## Expressions
 
 Les expressions sont un sous-ensemble de JavaScript, comme dans n8n, évalué par le
@@ -297,7 +317,6 @@ Garde-fous : longueur, profondeur, nombre d'opérations et taille des résultats
 | [wasm-bindgen](https://github.com/wasm-bindgen/wasm-bindgen), js-sys, web-sys | MIT / Apache-2.0 | pont Rust ↔ JS |
 | serde, serde_json, thiserror, bytes | MIT / Apache-2.0 | sérialisation, erreurs |
 | [Svelte 5](https://svelte.dev) + Vite | MIT | interface |
-| [Svelte Flow](https://svelteflow.dev) (`@xyflow/svelte`) | MIT | canevas de nœuds |
 | [shadcn-svelte](https://shadcn-svelte.com) + bits-ui | MIT | composants UI |
 | Tailwind CSS, clsx, tailwind-merge, Lucide | MIT / ISC | styles, icônes |
 | [CodeMirror 6](https://codemirror.net) | MIT | éditeur de code (expressions, SQL, JSON) |

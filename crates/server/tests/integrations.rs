@@ -53,6 +53,7 @@ async fn setup(allow_private: bool) -> Option<Env> {
         execution_timeout_secs: 30,
         executions_retention_days: 30,
         network_allowlist: vec![],
+        localhost_alias: None,
         credentials_key: [42u8; 32],
         connectors_url: std::env::var("TEST_CONNECTORS_URL").ok(),
         connectors_token: std::env::var("TEST_CONNECTORS_TOKEN").ok(),

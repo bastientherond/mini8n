@@ -172,59 +172,52 @@
 	background-image: var(--brand-gradient);
 }
 
-/* Svelte Flow aux couleurs du thème */
-.svelte-flow {
-	--xy-background-color: var(--background);
-	--xy-background-pattern-color: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
-	--xy-edge-stroke: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
-	--xy-edge-stroke-hover: var(--muted-foreground);
-	--xy-edge-stroke-selected: var(--primary);
-	--xy-edge-stroke-width: 2;
-	--xy-connectionline-stroke: var(--primary);
-	--xy-connectionline-stroke-width: 2;
-	--xy-handle-background-color: var(--card);
-	--xy-handle-border-color: color-mix(in oklch, var(--muted-foreground) 70%, transparent);
-	--xy-controls-button-background-color: var(--card);
-	--xy-controls-button-background-color-hover: var(--accent);
-	--xy-controls-button-color: var(--foreground);
-	--xy-controls-button-border-color: var(--border);
-	--xy-controls-box-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 4px 12px -4px rgb(0 0 0 / 0.12);
-	--xy-minimap-background-color: var(--card);
-	--xy-minimap-mask-background-color: color-mix(in oklch, var(--muted) 70%, transparent);
-	--xy-node-boxshadow-selected: none;
-	--xy-attribution-background-color: transparent;
+/* Canevas de workflow */
+.mini8n-canvas {
+	--edge: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+	--edge-data: oklch(0.65 0.14 160);
+	background-color: var(--background);
+	background-image: radial-gradient(color-mix(in oklch, var(--muted-foreground) 32%, transparent) 1.1px, transparent 1.1px);
 }
 
-.svelte-flow .svelte-flow__controls {
-	border-radius: 10px;
-	overflow: hidden;
-	border: 1px solid var(--border);
+.mini8n-edge-path {
+	stroke: var(--edge);
+	stroke-width: 2;
+	stroke-linejoin: round;
+	transition: stroke 120ms ease;
 }
-
-.svelte-flow .svelte-flow__handle {
-	width: 12px;
-	height: 12px;
-	border-width: 2px;
-	transition:
-		transform 120ms ease,
-		border-color 120ms ease,
-		background-color 120ms ease;
+.mini8n-edge-arrow {
+	fill: var(--edge);
+	transition: fill 120ms ease;
 }
-
-.svelte-flow .svelte-flow__handle:hover,
-.svelte-flow .svelte-flow__handle.connectingto {
-	border-color: var(--primary);
-	background: color-mix(in oklch, var(--primary) 20%, var(--card));
-	transform: scale(1.25);
+.mini8n-edge.has-data .mini8n-edge-path {
+	stroke: color-mix(in oklch, var(--edge-data) 75%, transparent);
 }
-
-.svelte-flow .svelte-flow__edge.selected .svelte-flow__edge-path,
-.svelte-flow .svelte-flow__edge:focus .svelte-flow__edge-path {
+.mini8n-edge.has-data .mini8n-edge-arrow {
+	fill: color-mix(in oklch, var(--edge-data) 75%, transparent);
+}
+.mini8n-edge.is-active .mini8n-edge-path {
+	stroke: var(--muted-foreground);
 	stroke-width: 2.5;
+}
+.mini8n-edge.is-active .mini8n-edge-arrow {
+	fill: var(--muted-foreground);
+}
+.mini8n-edge.is-selected .mini8n-edge-path {
+	stroke: var(--primary);
+	stroke-width: 2.5;
+}
+.mini8n-edge.is-selected .mini8n-edge-arrow {
+	fill: var(--primary);
+}
+.mini8n-edge-preview {
+	stroke: var(--primary);
+	stroke-width: 2;
+	stroke-dasharray: 6 5;
 }
 
 /* Liens animés pendant une exécution */
-.mini8n-running .svelte-flow__edge .svelte-flow__edge-path {
+.mini8n-running .mini8n-edge-path {
 	stroke: var(--primary);
 	stroke-dasharray: 6 6;
 	animation: mini8n-flow 0.6s linear infinite;
@@ -236,12 +229,38 @@
 	}
 }
 
-/* Le nœud personnalisé gère lui-même son apparence. */
-.svelte-flow .svelte-flow__node-step {
-	padding: 0;
-	border: none;
-	background: transparent;
-	border-radius: 0;
+/* Ports des nœuds */
+.mini8n-port {
+	position: absolute;
+	z-index: 2;
+	width: 14px;
+	height: 14px;
+	margin-top: -7px;
+	border-radius: 9999px;
+	border: 2px solid color-mix(in oklch, var(--muted-foreground) 65%, transparent);
+	background: var(--card);
+	cursor: crosshair;
+	transition:
+		transform 120ms ease,
+		border-color 120ms ease,
+		background-color 120ms ease;
+}
+.mini8n-port::after {
+	/* Zone de prise plus large que le point visible. */
+	content: '';
+	position: absolute;
+	inset: -8px;
+	border-radius: 9999px;
+}
+.mini8n-port:hover,
+.mini8n-port-hover {
+	border-color: var(--primary);
+	background: color-mix(in oklch, var(--primary) 25%, var(--card));
+	transform: scale(1.3);
+}
+.mini8n-port-target {
+	border-color: var(--primary);
+	box-shadow: 0 0 0 4px color-mix(in oklch, var(--primary) 18%, transparent);
 }
 
 /* Éditeur de code (CodeMirror) aux couleurs du thème */

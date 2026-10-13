@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { SvelteFlowProvider } from '@xyflow/svelte';
 	import { toast } from 'svelte-sonner';
 	import { untrack } from 'svelte';
 	import { errorMessage } from '$lib/api';
@@ -81,9 +80,7 @@
 					<FilesPage />
 				{:else if route.name === 'editor'}
 					{#key route.ws}
-						<SvelteFlowProvider>
-							<Editor workspaceId={route.ws} workflowId={route.workflow} />
-						</SvelteFlowProvider>
+						<Editor workspaceId={route.ws} workflowId={route.workflow} />
 					{/key}
 				{/if}
 			{/if}

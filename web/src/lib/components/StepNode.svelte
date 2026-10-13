@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { Handle, Position, type NodeProps } from '@xyflow/svelte';
 	import CircleCheck from '@lucide/svelte/icons/circle-check';
 	import CircleX from '@lucide/svelte/icons/circle-x';
 	import CircleMinus from '@lucide/svelte/icons/circle-minus';
@@ -8,9 +7,23 @@
 	import Settings2 from '@lucide/svelte/icons/settings-2';
 	import { cn } from '$lib/utils';
 	import { categoryAccent, categoryBar, formatCount, iconFor } from '$lib/icons';
-	import { inputHandle, wf, type StepNode } from '$lib/workflow.svelte';
+	import { wf, type StepData } from '$lib/workflow.svelte';
 
-	let { id, data, selected }: NodeProps<StepNode> = $props();
+	let {
+		id,
+		data,
+		selected = false,
+		connecting = false,
+		hoverInput = null,
+	}: {
+		id: string;
+		data: StepData;
+		selected?: boolean;
+		/** Un lien est en cours de tracé depuis une sortie : les entrées sont mises en avant. */
+		connecting?: boolean;
+		/** Entrée survolée pendant le tracé. */
+		hoverInput?: number | null;
+	} = $props();
 
 	const spec = $derived(wf.spec(data.kind));
 	const result = $derived(wf.results[id]);
@@ -105,15 +118,23 @@
 		{/if}
 	</div>
 
+	<!-- Ports : entrées à gauche, sortie à droite (le canevas gère les glisser-déposer). -->
 	{#each inputs as label, i (i)}
 		{@const top = ((i + 1) / (inputs.length + 1)) * 100}
-		<Handle type="target" position={Position.Left} id={inputHandle(i)} style="top: {top}%" />
+		<span
+			class={cn('mini8n-port -left-[7px]', connecting && 'mini8n-port-target', hoverInput === i && 'mini8n-port-hover')}
+			style="top: {top}%"
+			data-port="in-{i}"
+			data-node={id}
+			title={inputs.length > 1 ? `Entrée ${label}` : 'Entrée'}
+		></span>
 		{#if inputs.length > 1}
+			<!-- Au-dessus de l'arrivée du lien, pour ne pas le masquer. -->
 			<span
-				class="text-muted-foreground pointer-events-none absolute -left-5 -translate-y-1/2 text-[10px] font-medium"
-				style="top: {top}%">{label}</span
+				class="text-muted-foreground pointer-events-none absolute -left-4 -translate-x-full text-[10px] leading-none font-semibold"
+				style="top: calc({top}% - 13px)">{label}</span
 			>
 		{/if}
 	{/each}
-	<Handle type="source" position={Position.Right} id="out" />
+	<span class="mini8n-port -right-[7px]" style="top: 50%" data-port="out" data-node={id} title="Tirez pour relier à un autre nœud"></span>
 </div>

@@ -39,6 +39,8 @@ pub struct Config {
     /// Hôtes ou réseaux privés joignables malgré la protection SSRF
     /// (ex. `db.interne, 10.0.0.0/24`) : bases de données de l'entreprise…
     pub network_allowlist: Vec<String>,
+    /// Hôte vers lequel rediriger `localhost` dans les intégrations (`LOCALHOST_ALIAS`).
+    pub localhost_alias: Option<String>,
     /// Clé AES-256 de chiffrement des identifiants (32 octets).
     pub credentials_key: [u8; 32],
     /// Service « connectors » (Oracle) : URL interne et jeton partagé.
@@ -126,6 +128,7 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .filter(|n| *n > 0)
                 .unwrap_or(30),
+            localhost_alias: env("LOCALHOST_ALIAS").filter(|v| !v.trim().is_empty()),
             network_allowlist: env("NETWORK_ALLOWLIST")
                 .unwrap_or_default()
                 .split(',')
@@ -157,6 +160,7 @@ impl Config {
     /// Politique réseau des workflows (anti-SSRF + liste blanche).
     pub fn net_policy(&self) -> crate::net::NetPolicy {
         crate::net::NetPolicy::new(self.http_allow_private, &self.network_allowlist)
+            .with_localhost_alias(self.localhost_alias.clone())
     }
 }
 

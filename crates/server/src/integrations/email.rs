@@ -20,10 +20,12 @@ async fn transport(
     p: &Map<String, Value>,
 ) -> Result<(AsyncSmtpTransport<Tokio1Executor>, Mailbox), String> {
     let c = ctx.credential(p, "smtp").await?;
-    let host = str_param(&c, "host");
     let port = str_param(&c, "port").parse::<u16>().unwrap_or(587);
+    let policy = ctx.config.net_policy();
+    // `localhost` éventuellement redirigé vers la machine qui héberge Docker.
+    let host = policy.target_host(&str_param(&c, "host"));
     // Contrôle anti-SSRF de l'hôte (le nom est conservé pour la vérification TLS).
-    ctx.config.net_policy().resolve(&host, port).await?;
+    policy.resolve(&host, port).await?;
     let builder = match str_param(&c, "security").as_str() {
         "TLS" => AsyncSmtpTransport::<Tokio1Executor>::relay(&host).map_err(|e| e.to_string())?,
         "aucune" => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host),
