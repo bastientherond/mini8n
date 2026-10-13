@@ -2,6 +2,7 @@
 	// Canevas de workflow fait maison : nœuds positionnés en HTML, liens en SVG routés
 	// autour des nœuds (voir $lib/canvas/router.ts), interactions à la souris, au doigt
 	// et au clavier.
+	import Plus from '@lucide/svelte/icons/plus';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 	import { onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
@@ -14,6 +15,7 @@
 	import StepNode from '../StepNode.svelte';
 	import CanvasControls from './CanvasControls.svelte';
 	import Minimap from './Minimap.svelte';
+	import NodePicker from './NodePicker.svelte';
 
 	let { viewport: vp }: { viewport: Viewport } = $props();
 
@@ -126,11 +128,86 @@
 		return { x, y, w: Math.ceil(Math.max(...xs) + margin) - x, h: Math.ceil(Math.max(...ys) + margin) - y };
 	});
 
-	/** Le pointeur passe d'un élément du lien à un autre (tracé ↔ corbeille) : il reste survolé. */
+	/** Survol d'un lien : maintenu un court instant après l'avoir quitté, le temps
+	 *  d'atteindre sa corbeille (le bouton ne doit pas disparaître sous le pointeur). */
+	let leaveTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function enterEdge(id: string) {
+		clearTimeout(leaveTimer);
+		hoveredEdge = id;
+	}
+
 	function leaveEdge(e: PointerEvent, id: string) {
 		const next = (e.relatedTarget as Element | null)?.closest?.('[data-edge]');
 		if ((next as HTMLElement | SVGElement | null)?.dataset.edge === id) return;
-		if (hoveredEdge === id) hoveredEdge = null;
+		clearTimeout(leaveTimer);
+		leaveTimer = setTimeout(() => {
+			if (hoveredEdge === id) hoveredEdge = null;
+		}, 250);
+	}
+
+	// --- Insertion d'un nœud sur un lien (« + ») ----------------------------
+
+	let picker = $state<{ edge: string; x: number; y: number } | null>(null);
+
+	function openPicker(e: Event, id: string, at: Point) {
+		e.preventDefault();
+		e.stopPropagation();
+		clearTimeout(leaveTimer);
+		const W = 288;
+		const H = 330;
+		let x = at.x * vp.zoom + vp.x - W / 2;
+		let y = at.y * vp.zoom + vp.y + 20;
+		if (y + H > vp.height - 8) y = at.y * vp.zoom + vp.y - H - 20;
+		x = Math.max(8, Math.min(x, vp.width - W - 8));
+		y = Math.max(8, y);
+		picker = { edge: id, x, y };
+	}
+
+	/** Nœud inséré entre la source et la cible du lien ; les nœuds suivants s'écartent si besoin. */
+	function insertOnEdge(edgeId: string, kind: string) {
+		picker = null;
+		hoveredEdge = null;
+		const edge = wf.edges.find((x) => x.id === edgeId);
+		const src = edge && rects.get(edge.source);
+		const tgt = edge && rects.get(edge.target);
+		const out = edge && portPoint(edge.source, 'out');
+		if (!edge || !src || !tgt || !out) return;
+		const GAP = 80;
+		const size = DEFAULT_SIZE;
+		const moved = new Map<string, XYPosition>();
+		let position: XYPosition;
+		if (tgt.x > src.x + src.w) {
+			// Lien vers la droite : nœud aligné sur la sortie de la source.
+			position = { x: snap(src.x + src.w + GAP), y: snap(out.y - size.h / 2) };
+			const dx = Math.ceil(Math.max(0, position.x + size.w + GAP - tgt.x) / SNAP) * SNAP;
+			if (dx > 0) {
+				// La cible et tout ce qui la suit se décalent vers la droite.
+				const stack = [edge.target];
+				while (stack.length) {
+					const id = stack.pop()!;
+					if (moved.has(id) || id === edge.source) continue;
+					const n = wf.nodes.find((x) => x.id === id);
+					if (n) moved.set(id, { x: n.position.x + dx, y: n.position.y });
+					for (const e of wf.edges) if (e.source === id) stack.push(e.target);
+				}
+			}
+		} else {
+			// Lien qui revient en arrière : nœud au milieu du tracé.
+			const mid = edgeViews.find((v) => v.edge.id === edgeId)?.label ?? { x: src.x, y: src.y + src.h + GAP };
+			position = { x: snap(mid.x - size.w / 2), y: snap(mid.y - size.h / 2) };
+		}
+		const id = wf.insertOnEdge(edgeId, kind, position, moved);
+		if (id) wf.openNodeId = id;
+	}
+
+	/** Corbeille d'un lien : suppression immédiate, sans sélection préalable. */
+	function deleteEdge(e: Event, id: string) {
+		e.preventDefault();
+		e.stopPropagation();
+		clearTimeout(leaveTimer);
+		hoveredEdge = null;
+		wf.removeEdge(id);
 	}
 
 	const connectPreview = $derived.by(() => {
@@ -554,7 +631,7 @@
 						stroke="transparent"
 						stroke-width="16"
 						role="presentation"
-						onpointerenter={() => (hoveredEdge = v.edge.id)}
+						onpointerenter={() => enterEdge(v.edge.id)}
 						onpointerleave={(e) => leaveEdge(e, v.edge.id)}
 					/>
 					<path d={v.d} class="mini8n-edge-path" fill="none" />
@@ -568,14 +645,14 @@
 
 		<!-- Étiquettes des liens : lignes transmises, suppression -->
 		{#each edgeViews as v (v.edge.id)}
-			{@const active = v.edge.selected || hoveredEdge === v.edge.id}
+			{@const active = v.edge.selected || hoveredEdge === v.edge.id || picker?.edge === v.edge.id}
 			{#if active || v.showRows}
 				<div
 					class="absolute flex -translate-x-1/2 -translate-y-1/2 items-center gap-1"
 					style="left: {v.label.x}px; top: {v.label.y}px;"
 					data-edge={v.edge.id}
 					role="presentation"
-					onpointerenter={() => (hoveredEdge = v.edge.id)}
+					onpointerenter={() => enterEdge(v.edge.id)}
 					onpointerleave={(e) => leaveEdge(e, v.edge.id)}
 				>
 					{#if v.showRows && v.rows !== null}
@@ -588,11 +665,23 @@
 					{#if active}
 						<button
 							type="button"
+							class="bg-card text-muted-foreground hover:text-primary hover:border-primary/40 flex size-6 items-center justify-center rounded-md border shadow-sm"
+							title="Insérer un nœud ici"
+							aria-label="Insérer un nœud sur ce lien"
+							data-canvas-ui
+							onpointerdown={(e) => e.button === 0 && openPicker(e, v.edge.id, v.label)}
+							onclick={(e) => openPicker(e, v.edge.id, v.label)}
+						>
+							<Plus class="size-3.5" />
+						</button>
+						<button
+							type="button"
 							class="bg-card text-muted-foreground hover:text-destructive hover:border-destructive/40 flex size-6 items-center justify-center rounded-md border shadow-sm"
 							title="Supprimer le lien"
 							aria-label="Supprimer le lien"
 							data-canvas-ui
-							onclick={() => wf.removeEdge(v.edge.id)}
+							onpointerdown={(e) => e.button === 0 && deleteEdge(e, v.edge.id)}
+							onclick={(e) => deleteEdge(e, v.edge.id)}
 						>
 							<Trash2 class="size-3.5" />
 						</button>
@@ -626,6 +715,11 @@
 			class="border-primary/60 bg-primary/10 pointer-events-none absolute rounded-sm border"
 			style="left: {box.x * vp.zoom + vp.x}px; top: {box.y * vp.zoom + vp.y}px; width: {box.w * vp.zoom}px; height: {box.h * vp.zoom}px;"
 		></div>
+	{/if}
+
+	{#if picker}
+		{@const p = picker}
+		<NodePicker x={p.x} y={p.y} onpick={(kind) => insertOnEdge(p.edge, kind)} onclose={() => (picker = null)} />
 	{/if}
 
 	<CanvasControls viewport={vp} onfit={fit} onarrange={arrange} />

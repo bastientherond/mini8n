@@ -125,19 +125,46 @@ class WorkflowState {
 		return this.spec(kind)?.category === 'trigger';
 	}
 
-	addNode(kind: string, position: XYPosition, select = true) {
-		const spec = this.spec(kind);
-		if (!spec) return;
+	/** Nouveau nœud (nom unique, paramètres par défaut), sans l'ajouter au graphe. */
+	private makeNode(spec: NodeSpec, position: XYPosition, select: boolean): StepNode {
 		const taken = new Set(this.nodes.map((n) => n.data.name));
 		let name = spec.label;
 		for (let i = 2; taken.has(name); i++) name = `${spec.label} ${i}`;
-		const node: StepNode = {
-			id: `${kind}-${uid()}`,
+		return {
+			id: `${spec.kind}-${uid()}`,
 			type: 'step',
 			position,
 			selected: select,
-			data: { kind, name, params: this.withTokens(spec, this.defaults(spec)) },
+			data: { kind: spec.kind, name, params: this.withTokens(spec, this.defaults(spec)) },
 		};
+	}
+
+	/**
+	 * Insère un nœud sur un lien : source → nouveau → cible. `moved` déplace d'autres
+	 * nœuds pour lui faire de la place. Retourne l'identifiant du nœud créé.
+	 */
+	insertOnEdge(edgeId: string, kind: string, position: XYPosition, moved: Map<string, XYPosition> = new Map()) {
+		const edge = this.edges.find((e) => e.id === edgeId);
+		const spec = this.spec(kind);
+		if (!edge || !spec || spec.inputs.length === 0) return;
+		this.checkpoint();
+		const node = this.makeNode(spec, position, true);
+		this.nodes = [
+			...this.nodes.map((n) => ({ ...n, selected: false, position: moved.get(n.id) ?? n.position })),
+			node,
+		];
+		this.edges = [
+			...this.edges.filter((e) => e.id !== edgeId).map((e) => (e.selected ? { ...e, selected: false } : e)),
+			{ id: `e-${uid()}`, source: edge.source, target: node.id, sourceHandle: 'out', targetHandle: inputHandle(0) },
+			{ id: `e-${uid()}`, source: node.id, target: edge.target, sourceHandle: 'out', targetHandle: edge.targetHandle ?? inputHandle(0) },
+		];
+		return node.id;
+	}
+
+	addNode(kind: string, position: XYPosition, select = true) {
+		const spec = this.spec(kind);
+		if (!spec) return;
+		const node = this.makeNode(spec, position, select);
 		this.checkpoint();
 		const others = select ? this.nodes.map((n) => (n.selected ? { ...n, selected: false } : n)) : this.nodes;
 		this.nodes = [...others, node];
@@ -271,6 +298,7 @@ class WorkflowState {
 	}
 
 	removeEdge(id: string) {
+		if (!this.edges.some((e) => e.id === id)) return;
 		this.checkpoint();
 		this.edges = this.edges.filter((e) => e.id !== id);
 	}
