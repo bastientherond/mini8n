@@ -50,6 +50,8 @@ then
   echo "Échec de l'échange des bases : rien n'a été modifié." >&2
   exit 1
 fi
+# Toute erreur après l'échange : l'API est redémarrée quand même.
+trap '[ -z "$running" ] || docker compose start server; echo "Restauration effectuée, mais le nettoyage a échoué : vérifiez la base." >&2' ERR
 # Sessions et liens à usage unique de la sauvegarde : invalidés (révoqués depuis, peut-être).
 # (Tables absentes d'une sauvegarde ancienne : ignorées, les migrations les créeront.)
 docker compose exec -T db psql --username=mini8n --dbname=mini8n -v ON_ERROR_STOP=1 -qAt >/dev/null <<'SQL'

@@ -49,7 +49,9 @@
 		<Card.Content class="px-0">
 			{#if done}
 				<div class="space-y-4" role="status">
-					<p class="bg-muted rounded-md p-3 text-sm">Votre mot de passe a été modifié.</p>
+					<p class="bg-muted rounded-md p-3 text-sm">
+						Votre mot de passe a été modifié. Par sécurité, vos sessions et vos jetons d'accès des IA ont été révoqués.
+					</p>
 					<Button class="w-full" size="lg" onclick={toLogin}>Se connecter</Button>
 				</div>
 			{:else}

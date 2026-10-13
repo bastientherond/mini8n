@@ -489,8 +489,8 @@ enregistrées puis diffusées comme celles d'un membre (fusion avec les modifica
 
   Une fonction de la base qui écrit par un autre canal (transaction autonome, `dblink`…)
   échappe à toute transaction : pour une garantie stricte, donnez à l'identifiant un compte
-  de base sans droit d'écriture. Une réinitialisation de mot de passe révoque aussi les
-  jetons d'IA du compte.
+  de base sans droit d'écriture. Une réinitialisation de mot de passe et « se déconnecter de
+  tous les appareils » révoquent aussi les jetons d'IA du compte.
 - **Sécurité** : jeton personnel limité à un workspace, stocké haché (SHA-256), révocable,
   expiration au choix ; appartenance au workspace revérifiée à chaque appel ; jamais de
   cookie (pas de CSRF), `Origin` refusé s'il n'est pas celui du site (DNS rebinding) ;

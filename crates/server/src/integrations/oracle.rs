@@ -71,12 +71,12 @@ pub async fn query(
         return Err("Requête SQL vide".into());
     }
     let max = num_param(p, "max_rows", 10_000.0).clamp(1.0, 100_000.0) as u64;
-    if ctx.read_only {
-        // Simulation : une seule lecture, ni bloc PL/SQL ni fonction (transaction autonome).
-        super::sql::read_only_guard(&sql)?;
-    }
     // Expressions {{ … }} → binds positionnels :1, :2… (valeurs liées par le pilote).
     let bound = Bound::parse(&sql, &Scope::new(input.as_ref()))?;
+    if ctx.read_only {
+        // Simulation : une seule lecture, ni bloc PL/SQL ni fonction (transaction autonome).
+        super::sql::read_only_guard(&bound.sql(|n| format!(":{n}")))?;
+    }
     let binds = bound.values(input.as_ref(), str_param(p, "each") == "pour chaque ligne")?;
     if binds.is_empty() {
         return table_of(Value::Array(vec![]));

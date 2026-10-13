@@ -172,7 +172,8 @@ pub async fn query(
     let bound = Bound::parse(&sql, &Scope::new(input.as_ref()))?;
     let sets = bound.values(input.as_ref(), str_param(p, "each") == "pour chaque ligne")?;
     if ctx.read_only {
-        read_only_guard(&sql)?;
+        // Texte SQL seul : les expressions {{ … }} deviennent des paramètres liés.
+        read_only_guard(&bound.sql(|n| format!("${n}")))?;
     }
     if !bound.is_empty() && db == Db::Postgres && !is_select(&sql) {
         return Err(
@@ -297,7 +298,12 @@ pub(crate) fn read_only_guard(sql: &str) -> Result<(), String> {
         if let Some(r) = rest.strip_prefix("--") {
             rest = r.split_once('\n').map_or("", |(_, after)| after);
         } else if let Some(r) = rest.strip_prefix("/*") {
-            rest = r.split_once("*/").map_or("", |(_, after)| after);
+            let (comment, after) = r.split_once("*/").unwrap_or((r, ""));
+            // Commentaires imbriqués (PostgreSQL) : lecture ambiguë du premier mot, refusés.
+            if comment.contains("/*") {
+                return refuse("commentaires imbriqués interdits");
+            }
+            rest = after;
         } else {
             break;
         }
@@ -595,6 +601,7 @@ mod tests {
             "  select * from t where x = 'a'  ;",
             "-- commentaire\nWITH x AS (SELECT 1) SELECT * FROM x",
             "/* lecture */ SELECT current_setting('transaction_read_only')",
+            "SELECT * FROM t WHERE id = $1",
         ] {
             assert!(super::read_only_guard(ok).is_ok(), "{ok}");
         }
@@ -608,6 +615,7 @@ mod tests {
             "WITH FUNCTION f RETURN NUMBER IS PRAGMA AUTONOMOUS_TRANSACTION; BEGIN RETURN 1; END; SELECT f FROM dual",
             "DELETE FROM t",
             "-- SELECT\nDELETE FROM t",
+            "/* /* */ DELETE FROM t */ SELECT 1",
         ] {
             assert!(super::read_only_guard(bad).is_err(), "{bad}");
         }

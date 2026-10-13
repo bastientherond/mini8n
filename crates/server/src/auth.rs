@@ -575,11 +575,22 @@ pub async fn change_password(
 }
 
 /// Déconnecte toutes les sessions de l'utilisateur.
+/// Déconnecte toutes les sessions et révoque les jetons d'IA (compte peut-être compromis).
 pub async fn logout_all(State(state): State<AppState>, user: AuthUser) -> AppResult<Response> {
+    let mut tx = state.db.begin().await?;
     sqlx::query("DELETE FROM sessions WHERE user_id = $1")
         .bind(user.id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+    let revoked: Vec<Uuid> =
+        sqlx::query_scalar("DELETE FROM api_tokens WHERE user_id = $1 RETURNING id")
+            .bind(user.id)
+            .fetch_all(&mut *tx)
+            .await?;
+    tx.commit().await?;
+    for token in revoked {
+        state.mcp.forget_token(&state.live, token);
+    }
     Ok(logged_out())
 }
 

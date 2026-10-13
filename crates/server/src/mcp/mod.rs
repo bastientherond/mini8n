@@ -37,11 +37,11 @@ const MAX_BODY: usize = 1024 * 1024;
 const KEPT_RUNS: usize = 50;
 const KEPT_RUNS_PER_WORKSPACE: usize = 5;
 const KEPT_BYTES: usize = 256 * 1024 * 1024;
+const KEPT_BYTES_PER_WORKSPACE: usize = 64 * 1024 * 1024;
 const RUN_TTL: Duration = Duration::from_secs(30 * 60);
 /// Une IA inactive quitte l'éditeur au bout de ce délai.
 const AGENT_IDLE: Duration = Duration::from_secs(90);
 
-/// Exécution lancée par une IA, conservée pour consulter les données de chaque nœud.
 impl KeptRun {
     /// Taille des données conservées (Parquet de chaque nœud).
     fn bytes(&self) -> usize {
@@ -54,6 +54,7 @@ impl KeptRun {
     }
 }
 
+/// Exécution lancée par une IA, conservée pour consulter les données de chaque nœud.
 pub struct KeptRun {
     pub execution_id: Uuid,
     pub workspace_id: Uuid,
@@ -78,7 +79,13 @@ impl McpState {
         let mut runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
         runs.retain(|r| r.at.elapsed() < RUN_TTL);
         let ws = run.workspace_id;
-        while runs.iter().filter(|r| r.workspace_id == ws).count() >= KEPT_RUNS_PER_WORKSPACE {
+        let mine = |runs: &VecDeque<Arc<KeptRun>>| {
+            let own = runs.iter().filter(|r| r.workspace_id == ws);
+            (own.clone().count(), own.map(|r| r.bytes()).sum::<usize>())
+        };
+        while mine(&runs).0 >= KEPT_RUNS_PER_WORKSPACE
+            || (mine(&runs).0 > 0 && mine(&runs).1 + run.bytes() > KEPT_BYTES_PER_WORKSPACE)
+        {
             let oldest = runs
                 .iter()
                 .position(|r| r.workspace_id == ws)
