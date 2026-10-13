@@ -1,341 +1,118 @@
-# mini8n
+<p align="center">
+  <img src="docs/banniere.svg" alt="mini8n — automatisez vos tâches répétitives, sans écrire une ligne de code" width="100%">
+</p>
 
-Un clone minimaliste de [n8n](https://n8n.io) : éditeur de workflows visuel dans le navigateur,
-moteur d'exécution en **Rust compilé en WebAssembly**, données échangées entre nœuds au format **Parquet**.
+<p align="center">
+  <img src="https://img.shields.io/badge/sans_code-glisser_%26_relier-7c3aed?style=for-the-badge" alt="Sans code">
+  <img src="https://img.shields.io/badge/vos_données-restent_chez_vous-22c55e?style=for-the-badge" alt="Vos données restent chez vous">
+  <img src="https://img.shields.io/badge/100%25-open_source-0ea5e9?style=for-the-badge" alt="Open source">
+  <img src="https://img.shields.io/badge/interface-en_français-f59e0b?style=for-the-badge" alt="En français">
+</p>
 
-```
-                 ┌──────────── navigateur ─────────────────────────────┐
-                 │ Svelte 5 + shadcn-svelte + Svelte Flow  Web Worker  │
-                 │ (comptes, workspaces, éditeur)  ⇄  moteur wasm      │
-                 └───────────────┬─────────────────────────────────────┘
-                                 │ HTTPS (profil tls : Caddy)
-┌─ docker compose ───────────────▼─────────────────────────────────────────┐
-│  proxy (Caddy, optionnel) ─▶ web (nginx non-root : SPA + /api, CSP…)     │
-│                                  │ réseau « backend » (interne)          │
-│                                  ▼                                       │
-│                     server (API Rust axum, distroless)                   │
-│                                  │ réseau « data » (interne)             │
-│                                  ▼                                       │
-│                     db (PostgreSQL 18)                                   │
-│  engine : image de build (Rust → wasm) copiée dans web                   │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+---
 
-## Démarrer avec Docker (recommandé)
+## 💡 L'idée
 
-```bash
-./scripts/init-secrets.sh          # génère les secrets (base, clé des identifiants, jeton connecteurs)
-cp .env.example .env               # optionnel : adapter la configuration
-docker compose up -d --build
-```
+Tout le monde a des tâches qui reviennent sans cesse : exporter un fichier chaque lundi,
+recopier des réponses de formulaire dans un tableau, prévenir l'équipe quand une commande
+arrive, envoyer le même rapport chaque matin…
 
-L'interface est servie sur http://localhost:8080 (uniquement en local par défaut).
-Au premier accès, l'application demande de **créer un compte**, puis de **créer un workspace**.
+**mini8n les fait à votre place.** Vous dessinez le chemin que suivent vos données, comme
+un schéma sur un tableau blanc, et mini8n s'occupe de le parcourir — à l'heure prévue,
+à chaque nouvel événement, ou quand vous cliquez sur un bouton.
 
-Interface (inspirée de Supabase) :
-- **barre du haut** : sélecteur de workspace (avec votre rôle) / sélecteur de workflow, recherche `⌘K`,
-  aide, avatar ;
-- **barre latérale** (se déploie au survol, épinglable) : Accueil, Éditeur, Workflows, Membres,
-  Paramètres, Mon compte ;
-- **menu de l'avatar** : compte et mot de passe, actions du workspace, changement de workspace,
-  thème, palette de commandes, raccourcis, déconnexion (ou de tous les appareils) ;
-- chaque page a sa propre URL (`#/w/<workspace>/workflows/<id>`), partageable entre membres.
+> Inspiré de [n8n](https://n8n.io), en plus simple, plus léger, et pensé pour être
+> installé chez vous.
 
-| Conteneur | Image | Rôle |
-| --- | --- | --- |
-| `engine` | `crates/engine/Dockerfile` | build + tests du moteur, produit le `.wasm` (jamais exécuté) |
-| `db` | `postgres:18-alpine` | données (comptes, sessions, workspaces, workflows) |
-| `server` | `crates/server/Dockerfile` | API Rust, image distroless non-root |
-| `web` | `web/Dockerfile` | nginx non-root : interface + reverse proxy `/api` |
-| `connectors` | `connectors/Dockerfile` | Node non-root : pilote Oracle « thin » (node-oracledb), joignable par l'API seulement |
-| `proxy` | `caddy:2.11-alpine` | TLS automatique (profil `tls`) |
+## 🧩 Comment ça marche
 
-En production, avec un nom de domaine pointant vers le serveur :
+<table>
+<tr>
+<td align="center" width="33%">
 
-```bash
-# .env : SITE_ADDRESS=mini8n.exemple.com  et  PUBLIC_ORIGIN=https://mini8n.exemple.com
-docker compose --profile tls up -d --build
-```
+### 🟦 1. Un déclencheur
 
-## Développement local
+**Quand** faut-il agir ?
 
-Prérequis : Rust (rustup) avec la cible `wasm32-unknown-unknown`, le CLI `wasm-bindgen`
-**de la même version** que la dépendance (0.2.129), Node.js et un PostgreSQL.
+Tous les jours à 8 h, à chaque formulaire rempli, quand un site reçoit une nouvelle
+donnée, ou simplement d'un clic.
 
-```bash
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.129
-# API (PostgreSQL local) — l'origine Vite doit être autorisée :
-DATABASE_URL=postgres://… PUBLIC_ORIGIN=http://localhost:5173 BIND_ADDR=127.0.0.1:3000 cargo run -p mini8n-server
-# Interface (proxy /api → :3000)
-cd web && npm install && npm run dev
-```
+</td>
+<td align="center" width="33%">
 
-| Commande | Effet |
-| --- | --- |
-| `npm run build` (dans `web/`) | wasm release + build de production dans `web/dist` |
-| `npm run wasm` / `npm run wasm:dev` | recompile seulement le moteur (release / debug) |
-| `npm run check` | vérification TypeScript / Svelte |
-| `cargo test` | tests du moteur et du serveur |
-| `TEST_DATABASE_URL=postgres://… cargo test -p mini8n-server` | + tests d'intégration de l'API |
-| `TEST_MYSQL=hôte:port:base:user:mdp`, `TEST_ORACLE=…`, `TEST_CONNECTORS_URL`, `TEST_CONNECTORS_TOKEN` | + tests MySQL et Oracle |
-| `npm test` (dans `connectors/`) | tests du connecteur Oracle |
+### 🟪 2. Des étapes
 
-## Structure
+**Que** faut-il faire ?
 
-```
-crates/engine/          moteur Rust → wasm (workflow, nœuds, expressions, Parquet)
-crates/server/          API Rust (axum + sqlx)
-  migrations/           schéma PostgreSQL
-  src/auth.rs           inscription, connexion, sessions, mot de passe
-  src/workspaces.rs     workspaces, membres, rôles
-  src/workflows.rs      stockage des workflows (version optimiste)
-  src/triggers.rs       activation, webhooks et formulaires publics, exécution à distance
-  src/runner.rs         exécution côté serveur (pool de threads, sous-workflows, erreurs)
-  src/scheduler.rs      planification et surveillance d'API
-  src/schedule.rs       intervalle / quotidien / hebdomadaire / cron, fuseaux horaires
-  src/net.rs            client HTTP sortant anti-SSRF, politique réseau (liste blanche)
-  src/credentials.rs    identifiants chiffrés ; src/crypto.rs : AES-256-GCM
-  src/files.rs          fichiers du workspace
-  src/integrations/     PostgreSQL / MySQL (sqlx), Oracle (connecteur), fichiers, e-mail, messageries
-  src/executions.rs     historique des exécutions
-  src/security.rs       anti-CSRF, limitation de débit, IP cliente
-  tests/api.rs          tests d'intégration (PostgreSQL)
-web/                    interface Svelte 5 + Vite + Tailwind 4 + shadcn-svelte
-  nginx/                configuration nginx (en-têtes de sécurité, proxy)
-  src/lib/api.ts        client API ; session.svelte.ts : compte et workspaces
-  src/lib/router.svelte.ts  routes (#/w/<workspace>/workflows/<id>…)
-  src/lib/engine/       worker WASM, client RPC
-  src/lib/components/
-    shell/              barre du haut, barre latérale, menu avatar, palette ⌘K, dialogues
-    pages/              accueil, workflows, membres, paramètres, compte
-    Editor.svelte       éditeur de workflow (canevas, palette de nœuds, vue détaillée)
-    canvas/             canevas maison (nœuds, liens routés, mini-carte, commandes)
-connectors/             service Node « connectors » (Oracle, node-oracledb thin)
-deploy/Caddyfile        reverse proxy TLS
-compose.yaml            orchestration
-```
+Récupérer, trier, filtrer, calculer, regrouper, croiser deux sources…
+Chaque étape est un bloc à relier au suivant.
 
-## Sécurité
+</td>
+<td align="center" width="33%">
 
-**Comptes et sessions**
-- Mots de passe hachés en **Argon2id** (19 Mio, t=2, p=1, recommandations OWASP), 12 caractères minimum,
-  calcul hors de la boucle async et borné en concurrence.
-- Session : jeton aléatoire de 256 bits dans un cookie `HttpOnly; SameSite=Strict`, en plus
-  `Secure` avec le préfixe `__Host-` dès que le site est servi en HTTPS (`COOKIE_SECURE=auto`,
-  car Safari refuse les cookies `Secure` sur `http://localhost`) ;
-  seul son hash SHA-256 est en base. Nouveau jeton à chaque connexion, expiration, 20 sessions max.
-  par compte, révocation de toutes les autres sessions au changement de mot de passe.
-- Connexion : même message et même temps de réponse pour un compte inexistant ou un mauvais
-  mot de passe ; limitation par IP et par compte ; blocage progressif après 5 échecs.
-- Inscriptions désactivables (`ALLOW_REGISTRATION=false`).
+### 🟨 3. Un résultat
 
-**API**
-- Anti-CSRF : cookie `SameSite=Strict`, en-tête `Origin` obligatoire et égal à `PUBLIC_ORIGIN`
-  pour toute requête modifiant des données, corps JSON obligatoire.
-- Contrôle d'accès sur chaque route : un non-membre reçoit 404 (pas de fuite d'existence),
-  les actions d'administration sont réservées aux propriétaires, un workspace garde toujours un
-  propriétaire.
-- Entrées validées (champs inconnus refusés, tailles bornées), corps limités à 2 Mo,
-  délai max. de 30 s par requête, aucune erreur interne exposée, requêtes SQL paramétrées.
+**Où** envoyer le résultat ?
 
-**Déclencheurs**
-- Webhooks et formulaires identifiés par un jeton aléatoire de 192 bits (régénérable), actifs
-  seulement si le workflow l'est ; secret de webhook comparé en temps constant ; limitation
-  de débit par jeton et par IP ; corps limités à 1 Mo ; formulaires soumis à la vérification
-  d'origine et validés champ par champ.
-- Exécutions bornées (file, délai, profondeur de sous-workflows), paniques du moteur confinées,
-  pas de boucle entre workflows « Sur erreur ».
+Un e-mail, un message Slack ou Teams, un fichier Excel, une mise à jour dans
+votre base de données.
 
-**Navigateur**
-- CSP stricte : aucun script inline, `wasm-unsafe-eval` seul, pas d'iframe (`frame-ancestors 'none'`),
-  `connect-src` configurable (`CSP_CONNECT_SRC`) pour le nœud HTTP.
-- COOP/COEP/CORP, `nosniff`, `Referrer-Policy: no-referrer`, `Permissions-Policy` restrictive, HSTS (profil tls).
-- Le nœud HTTP n'envoie jamais de cookies (`credentials: omit`), n'accepte que des URL http(s)
-  et limite la taille des réponses.
-- Import de workflow validé et reconstruit ; export CSV protégé contre l'injection de formules ;
-  en-têtes sensibles masqués à l'export JSON ; expressions bornées (longueur, profondeur) ;
-  le moteur tourne dans un Worker redémarré en cas de blocage.
+</td>
+</tr>
+</table>
 
-**Conteneurs**
-- Images minimales (distroless, alpine), utilisateurs non-root, système de fichiers en lecture seule,
-  `cap_drop: ALL`, `no-new-privileges`, limites mémoire / processus.
-- Base de données sur un réseau Docker **interne** ; l'API n'a qu'un accès **sortant** (requêtes
-  HTTP des workflows, filtrées contre le SSRF) ; seul nginx (ou Caddy) est exposé, sur
-  `127.0.0.1` par défaut.
-- Mot de passe PostgreSQL en secret Docker (fichier hors dépôt), authentification SCRAM-SHA-256.
-- `npm ci --ignore-scripts`, `Cargo.lock` respecté (`--locked`), tests exécutés pendant le build.
+À chaque étape, vous **voyez vos données** : ce qui entre, ce qui sort, combien de lignes
+passent. Pas de boîte noire, on comprend tout de suite ce qui se passe.
 
-## Données entre nœuds : Parquet
+## ✨ Des exemples concrets
 
-Chaque nœud produit une table Apache Arrow, **sérialisée en Parquet** (compression Snappy).
-Les nœuds suivants relisent ce Parquet ; l'interface reçoit aussi ces octets pour
-l'aperçu paginé et l'export (`.parquet`, `.csv`, `.json`). Plusieurs liens vers une même
-entrée sont empilés (union des colonnes).
+| | Situation | Ce que fait mini8n |
+| :---: | --- | --- |
+| 📬 | Chaque matin, le responsable veut les ventes de la veille | lit la base de données, regroupe par produit et **envoie un récapitulatif Excel par e-mail** à 8 h |
+| 📝 | Un formulaire d'inscription à un événement | publie **une page de formulaire**, range chaque réponse et **prévient l'équipe sur Slack** |
+| 🔔 | Surveiller les nouvelles annonces d'un site | interroge le site toutes les 15 minutes et **n'alerte que pour les nouveautés** |
+| 🧹 | Un fichier client plein de doublons | lit le fichier, **supprime les doublons, corrige les formats** et produit un fichier propre |
+| 🔗 | Deux outils qui ne se parlent pas | reçoit les données de l'un et **les transmet à l'autre** automatiquement |
+| 🚨 | Un traitement automatique a planté | un workflow « en cas d'erreur » **vous prévient immédiatement** |
 
-## Déclencheurs
+## 🌈 Pourquoi mini8n ?
 
-Un workflow démarre par un ou plusieurs déclencheurs. Dans l'éditeur, « Exécuter » lance le
-workflow dans le navigateur avec les **données de test** de chaque déclencheur. Pour les
-déclencheurs automatiques, il faut **activer** le workflow (interrupteur « Actif ») : il est alors
-exécuté **côté serveur**, et chaque exécution apparaît dans **Exécutions**.
+- 🎨 **Visuel** — on construit en glissant des blocs sur une page, on range tout d'un clic,
+  et les liens se colorent quand les données circulent.
+- 🔒 **Vos données restent chez vous** — mini8n s'installe sur votre propre serveur.
+  Rien ne part chez un prestataire, et les mots de passe enregistrés sont chiffrés.
+- 👥 **Fait pour travailler à plusieurs** — des espaces de travail par équipe, des membres
+  avec des rôles, et des liens à partager vers chaque workflow.
+- 🧪 **On teste avant de lancer** — chaque workflow s'essaie dans l'éditeur avec des données
+  d'exemple, puis on l'active et il tourne tout seul. L'historique garde la trace de chaque
+  exécution.
+- 🪶 **Léger et simple** — une interface en français, claire, sans menus à rallonge.
+- 🆓 **Libre et gratuit** — uniquement des briques open source.
 
-| Déclencheur | Démarre le workflow… | Données produites |
-| --- | --- | --- |
-| Déclenchement manuel | bouton Exécuter (éditeur) ou « Exécuter sur le serveur » | `declenche_le` |
-| Planification | toutes les N minutes, chaque jour / certains jours à HH:MM, ou expression cron (5 champs), dans le fuseau choisi | `declenche_le`, `planifie_pour` |
-| Webhook | à chaque requête sur `/api/hooks/<jeton>` (méthode, secret `X-Mini8n-Secret` facultatif) ; réponse immédiate (202) ou résultat du workflow en JSON | corps JSON (objet ou tableau), formulaire encodé ou texte, `_methode`, `_recu_le` |
-| Formulaire | à chaque envoi d'une page publique `/#/f/<jeton>` (champs texte, texte long, e-mail, nombre, date, case ; validés côté serveur) | une ligne par réponse + `soumis_le` |
-| Surveillance d'API | quand une API JSON interrogée toutes les N minutes renvoie de **nouveaux** éléments (repérés par une colonne identifiante) | les nouveaux éléments seulement |
-| Appelé par un workflow | quand un autre workflow l'exécute avec le nœud « Exécuter un workflow » | la table envoyée par l'appelant |
-| Sur erreur | quand une exécution automatique d'un autre workflow du workspace échoue | `workflow`, `noeud`, `erreur`, `execution_id`, `date` |
+## 🔌 Ce que vous pouvez brancher
 
-Le nœud **Exécuter un workflow** envoie sa table d'entrée à un autre workflow et récupère sa
-sortie (son dernier nœud terminal exécuté avec succès). Il fonctionne dans l'éditeur comme sur le
-serveur, jusqu'à 5 niveaux d'imbrication.
+<table>
+<tr>
+<td>🗄️ <b>Bases de données</b><br>PostgreSQL, MySQL / MariaDB, Oracle</td>
+<td>📁 <b>Fichiers</b><br>Excel, CSV, JSON, Parquet</td>
+<td>✉️ <b>E-mail</b><br>un message par ligne ou un récapitulatif avec pièce jointe</td>
+</tr>
+<tr>
+<td>💬 <b>Messageries</b><br>Slack, Microsoft Teams, Discord, Mattermost, Google Chat</td>
+<td>🌐 <b>Sites et applications</b><br>appels à n'importe quel service web, webhooks</td>
+<td>📋 <b>Formulaires</b><br>pages publiques à partager, réponses validées</td>
+</tr>
+</table>
 
-Côté serveur : pool de threads dédié (`RUNNER_THREADS`), file bornée, délai maximal par exécution
-(`EXECUTION_TIMEOUT_SECS`), historique conservé `EXECUTIONS_RETENTION_DAYS` jours. Les requêtes
-HTTP des workflows (nœud HTTP, surveillance) ne peuvent joindre que des **adresses publiques**
-(protection SSRF : boucle locale, réseaux privés et Docker, métadonnées cloud, redirections
-vers ces adresses… sont refusés).
+Et pour les cas plus fins, des **petites formules** (comme dans un tableur) permettent
+de calculer une colonne, mettre en forme une date ou composer un message personnalisé —
+avec suggestions et aperçu du résultat pendant la saisie.
 
-## Intégrations
+## 🚀 Envie d'essayer ?
 
-| Nœud | Rôle |
-| --- | --- |
-| PostgreSQL · lire / écrire | requête SQL → table ; insertion ou mise à jour (`ON CONFLICT`) de la table d'entrée |
-| MySQL · lire / écrire | idem pour MySQL / MariaDB (`ON DUPLICATE KEY UPDATE`) |
-| Oracle · lire / écrire | via le service `connectors` (node-oracledb en mode thin : open source, sans Instant Client) |
-| Créer un fichier | table → fichier CSV, JSON, Parquet ou Excel dans l'espace **Fichiers** du workspace |
-| Lire un fichier | CSV (séparateur détecté), JSON, Parquet, Excel / OpenDocument → table |
-| Envoyer un e-mail | SMTP (STARTTLS / TLS) : un e-mail par ligne ou un récapitulatif avec pièce jointe CSV / Excel |
-| Message (Slack, Teams…) | webhook entrant Slack, Discord, Microsoft Teams, Mattermost ou Google Chat |
+L'installation, la configuration, la sécurité et le fonctionnement interne sont décrits
+dans la **[documentation technique](docs/TECHNIQUE.md)**.
 
-Les textes acceptent des variables : `{{colonne}}` (valeur de la ligne), `{{nb_lignes}}` et
-`{{tableau}}` (récapitulatif).
-
-Les accès sont des **identifiants** du workspace (page « Identifiants ») : chiffrés en AES-256-GCM
-(clé `CREDENTIALS_KEY`), jamais renvoyés au navigateur, référencés par les nœuds (un export de
-workflow ne contient aucun secret). Ces nœuds s'exécutent **toujours sur le serveur**, y compris
-lors d'un test dans l'éditeur. Les connexions suivent la même protection SSRF que les requêtes
-HTTP : pour joindre une base sur un réseau privé, ajoutez-la à `NETWORK_ALLOWLIST`
-(`db.interne,10.20.0.0/16`).
-
-> Sauvegardez `secrets/credentials_key.txt` : sans elle, les identifiants enregistrés sont illisibles.
-
-## Nœuds disponibles
-
-| Catégorie | Nœud | Rôle |
-| --- | --- | --- |
-| Source | Données JSON | tableau d'objets saisi à la main (objets imbriqués aplatis en `a.b`) |
-| Source | CSV | contenu CSV collé, types inférés |
-| Source | Requête HTTP | `fetch` d'une API JSON (chemin vers le tableau configurable) |
-| Transformation | Filtrer | garde les lignes vérifiant une expression |
-| Transformation | Formule | ajoute / remplace une colonne calculée |
-| Transformation | Colonnes | garder / retirer des colonnes |
-| Transformation | Renommer | `ancien -> nouveau` |
-| Transformation | Trier | `prix desc, nom` |
-| Transformation | Limiter | nombre + décalage |
-| Transformation | Dédoublonner | sur toutes les colonnes ou certaines |
-| Transformation | Agréger | `group by` + `count, count_distinct, sum, avg, min, max, first, last` |
-| Combinaison | Fusionner | empiler, jointure interne, jointure gauche |
-| Flux | Exécuter un workflow | appelle un autre workflow du workspace et récupère sa sortie |
-| Intégrations | PostgreSQL, MySQL, Oracle, fichiers, e-mail, messageries | voir « Intégrations » |
-
-Dans l'éditeur, un **double-clic** sur un nœud (ou Entrée) ouvre sa vue détaillée plein écran :
-entrée à gauche, paramètres au centre, sortie à droite.
-
-Un nœud **désactivé** transmet son entrée telle quelle. « Exécuter jusqu'ici » n'exécute
-que le nœud et ses ancêtres.
-
-## Canevas
-
-Le canevas est fait maison (`web/src/lib/canvas`, `web/src/lib/components/canvas`) :
-
-- **Liens routés** : tracés à angles droits qui contournent les nœuds (plus court chemin
-  sur une grille construite à partir des nœuds, virages pénalisés), liens parallèles
-  écartés en couloirs, petits ponts aux croisements, virages arrondis. Après une
-  exécution, les liens prennent la couleur des données et affichent le nombre de lignes.
-- **Ranger** (bouton de la barre d'outils, `Maj + Alt + T`) : nœuds rangés en colonnes
-  selon leur profondeur, ordre limitant les croisements (l'entrée A est alimentée par le
-  nœud du haut), chaque nœud aligné sur ses voisins, positions sur la grille. Annulable.
-- **Interactions** : glisser le fond (ou molette) pour se déplacer, `Ctrl/⌘ + molette` ou
-  pincement pour zoomer, `Maj + glisser` pour sélectionner plusieurs nœuds, `Maj + clic`
-  pour ajouter à la sélection, `Alt` pendant un déplacement pour ignorer la grille,
-  tirer depuis un port (ou le lâcher sur un nœud) pour relier — les boucles sont refusées,
-  `Suppr` pour supprimer, `⌘/Ctrl + Z` / `Maj + ⌘/Ctrl + Z` pour annuler / rétablir,
-  `⌘/Ctrl + A` pour tout sélectionner, `Maj + 1` pour tout afficher.
-- Le routage est testé à part : `npm test` (aucune dépendance, `node --test`).
-
-## Expressions
-
-Les expressions sont un sous-ensemble de JavaScript, comme dans n8n, évalué par le
-moteur Rust (aucun moteur JavaScript n'est embarqué : pas de boucle infinie ni d'accès
-au système possible).
-
-```js
-$json.prix * $json.quantite > 100 && $json.categorie === "livres"
-$json.nom.trim().toUpperCase() + " (" + ($json.age ?? "?") + ")"
-$json.stock > 0 ? "dispo" : "rupture"
-$json["code postal"].startsWith("75")
-`Commande ${$json.id} du ${$now.format("dd/MM/yyyy")}`
-$input.all().map(i => i.json.montant).sum()
-$('Clients').first().json.email
-$json.date.toDate().plus(30, "days").toISODate()
-```
-
-- **Données** : `$json` (ligne en cours ; colonnes aplaties `adresse.ville` accessibles en
-  `$json.adresse.ville`), `$input.first()` / `.last()` / `.all()` / `.item`,
-  `$('Nom du nœud')` (sortie d'un autre nœud exécuté), `$index`, `$now`, `$today`.
-- **Syntaxe** : opérateurs `+ - * / % **`, `=== !== == != < <= > >=`, `&& || ! ??`,
-  ternaire `a ? b : c`, gabarits `` `…${x}…` ``, tableaux et objets littéraux,
-  fonctions fléchées en argument (`liste.filter(x => x > 1)`), `?.`, commentaires.
-- **Méthodes** : texte (`toUpperCase`, `includes`, `replaceAll`, `split`, `padStart`,
-  `toNumber`, `toDate`, `isEmail`…), nombres (`toFixed`, `round(2)`, `toLocaleString`…),
-  listes (`map`, `filter`, `find`, `reduce`, `join`, `sum`, `average`, `unique`, `pluck`…),
-  dates (`format('EEEE d MMMM')`, `plus`, `minus`, `startOf`, `diff`, `year`, `weekday`…),
-  `Math.*`, `JSON.stringify/parse`, `Object.keys`. La liste complète, documentée et testée,
-  est dans [`crates/engine/src/expr/docs.rs`](crates/engine/src/expr/docs.rs).
-- **Dans les champs texte** (URL, en-têtes et corps HTTP, e-mails, messages, nom de fichier),
-  les expressions s'écrivent entre `{{ … }}` : `Bonjour {{ $json.prenom }} !`.
-- L'ancienne syntaxe reste acceptée : colonnes nues (`prix > 15`) et fonctions
-  (`upper(nom)`, `round(x, 2)`, `if(c, a, b)`…).
-
-Dans l'éditeur (CodeMirror), chaque champ propose l'autocomplétion contextuelle
-(colonnes avec leur type et une valeur d'exemple, méthodes selon le type de la valeur,
-autres nœuds), souligne les erreurs et affiche le résultat en direct, ligne par ligne.
-Les colonnes du panneau d'entrée peuvent être glissées dans un champ, et le bouton
-d'agrandissement ouvre un éditeur plein écran avec l'explorateur des données disponibles.
-Garde-fous : longueur, profondeur, nombre d'opérations et taille des résultats bornés.
-
-## Bibliothèques (toutes open source)
-
-| Bibliothèque | Licence | Usage |
-| --- | --- | --- |
-| [arrow-rs / parquet](https://github.com/apache/arrow-rs) | Apache-2.0 | tables en mémoire, Parquet, CSV, JSON |
-| [wasm-bindgen](https://github.com/wasm-bindgen/wasm-bindgen), js-sys, web-sys | MIT / Apache-2.0 | pont Rust ↔ JS |
-| serde, serde_json, thiserror, bytes | MIT / Apache-2.0 | sérialisation, erreurs |
-| [Svelte 5](https://svelte.dev) + Vite | MIT | interface |
-| [shadcn-svelte](https://shadcn-svelte.com) + bits-ui | MIT | composants UI |
-| Tailwind CSS, clsx, tailwind-merge, Lucide | MIT / ISC | styles, icônes |
-| [CodeMirror 6](https://codemirror.net) | MIT | éditeur de code (expressions, SQL, JSON) |
-| [axum](https://github.com/tokio-rs/axum), tokio, tower-http | MIT | API HTTP |
-| [sqlx](https://github.com/launchbadge/sqlx) | MIT / Apache-2.0 | PostgreSQL, migrations |
-| argon2, sha2, getrandom (RustCrypto) | MIT / Apache-2.0 | hachage, jetons |
-| [reqwest](https://github.com/seanmonstar/reqwest) (rustls) | MIT / Apache-2.0 | requêtes HTTP des workflows côté serveur |
-| chrono, chrono-tz | MIT / Apache-2.0 | planification, fuseaux horaires, dates des expressions |
-| aes-gcm, base64 (RustCrypto) | MIT / Apache-2.0 | chiffrement des identifiants |
-| sqlx (PostgreSQL, MySQL) | MIT / Apache-2.0 | intégrations bases de données |
-| [node-oracledb](https://github.com/oracle/node-oracledb) (mode thin) | Apache-2.0 / UPL-1.0 | intégration Oracle, sans client propriétaire |
-| [lettre](https://github.com/lettre/lettre) | MIT | e-mail SMTP |
-| [calamine](https://github.com/tafia/calamine), [rust_xlsxwriter](https://github.com/jmcnamara/rust_xlsxwriter) | MIT / Apache-2.0 | lecture et écriture Excel |
-| PostgreSQL, nginx, Caddy | PostgreSQL / BSD-2 / Apache-2.0 | base, serveur web, TLS |
-
-## Limites actuelles / pistes
-
-- Pas encore de vérification d'e-mail ni de réinitialisation de mot de passe par e-mail.
-- Les limites de débit de l'API sont en mémoire (une seule instance de `server`).
-- Le nœud HTTP exécuté dans l'éditeur est soumis au CORS du navigateur (pas côté serveur).
-- Pas encore de déclencheurs e-mail (IMAP) ni flux RSS/XML, ni de connecteurs SQL Server, MongoDB, S3.
-- Le `.wasm` fait ~8 Mo (~1,8 Mo gzip), surtout à cause des noyaux Arrow.
+<p align="center">
+  <sub>Fait avec 💜 — mini8n</sub>
+</p>
