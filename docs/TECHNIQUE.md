@@ -58,6 +58,22 @@ En production, avec un nom de domaine pointant vers le serveur :
 docker compose --profile tls up -d --build
 ```
 
+## Données personnelles
+
+L'historique des exécutions (page Exécutions) garde, pour chaque exécution automatique, le
+statut, la durée, le nombre de lignes et les colonnes de chaque nœud, les erreurs et un
+**aperçu de la sortie** (20 premières lignes), pendant `EXECUTIONS_RETENTION_DAYS` jours (30).
+
+- **Par workflow** (menu « … » de l'éditeur) : *Conserver les données des exécutions*. Désactivé,
+  l'historique ne garde plus aucune ligne (statuts, comptes, colonnes et erreurs seulement) et
+  les aperçus déjà enregistrés sont effacés — à utiliser pour les workflows qui traitent des
+  données personnelles (clients, e-mails…).
+- **Effacer l'historique** d'un workflow (propriétaires) : pour une demande d'effacement.
+- Les données d'une exécution lancée par une IA restent 30 minutes en mémoire seulement
+  (consultation par `get_node_output`), jamais en base au-delà de l'historique ci-dessus.
+- Les sauvegardes contiennent l'historique : leur rotation (`BACKUP_KEEP`) fixe la durée
+  maximale de conservation dans les sauvegardes.
+
 ## Sauvegardes et restauration
 
 Le service `backup` sauvegarde la base toutes les `BACKUP_INTERVAL_HOURS` heures (24 par

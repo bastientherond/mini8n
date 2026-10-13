@@ -685,7 +685,10 @@ async fn record_start(
 
 async fn record_finish(db: &PgPool, id: Uuid, s: &Summary) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "UPDATE executions SET status = $2, error = $3, finished_at = now(), duration_ms = $4, report = $5, output = $6
+        // Aperçu des lignes produites : seulement si le workflow conserve ses données.
+        "UPDATE executions SET status = $2, error = $3, finished_at = now(), duration_ms = $4, report = $5,
+                output = CASE WHEN COALESCE((SELECT w.keep_data FROM workflows w WHERE w.id = executions.workflow_id), true)
+                              THEN $6 END
          WHERE id = $1",
     )
     .bind(id)

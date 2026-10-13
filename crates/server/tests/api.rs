@@ -615,3 +615,166 @@ async fn stale_secure_cookie_does_not_hide_valid_session() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+/// Données personnelles : conservation désactivable par workflow, historique effaçable.
+#[tokio::test]
+async fn execution_data_retention() {
+    let Some(app) = setup().await else { return };
+    let owner = register(&app, &email()).await;
+    let ws = api(
+        &app,
+        "POST",
+        "/api/workspaces",
+        Some(json!({"name": "RGPD"})),
+        Some(&owner),
+    )
+    .await;
+    let ws = ws.body["id"].as_str().unwrap().to_string();
+    let def = json!({"nodes": [{"id": "src", "position": {"x": 0, "y": 0},
+        "data": {"kind": "manual", "name": "Clients", "params": {"data": "[{\"email\": \"a@exemple.test\"}]"}}}], "edges": []});
+    let wf = api(
+        &app,
+        "POST",
+        &format!("/api/workspaces/{ws}/workflows"),
+        Some(json!({"name": "Clients", "definition": def})),
+        Some(&owner),
+    )
+    .await;
+    let wf = wf.body["id"].as_str().unwrap().to_string();
+    assert_eq!(wf_keep_data(&app, &ws, &wf, &owner).await, true);
+
+    let output = |exec: String| {
+        let (app, ws, owner) = (app.clone(), ws.clone(), owner.clone());
+        async move {
+            api(
+                &app,
+                "GET",
+                &format!("/api/workspaces/{ws}/executions/{exec}"),
+                None,
+                Some(&owner),
+            )
+            .await
+            .body["output"]
+                .clone()
+        }
+    };
+    let run = || {
+        let (app, ws, wf, owner) = (app.clone(), ws.clone(), wf.clone(), owner.clone());
+        async move {
+            let r = api(
+                &app,
+                "POST",
+                &format!("/api/workspaces/{ws}/workflows/{wf}/run"),
+                None,
+                Some(&owner),
+            )
+            .await;
+            assert_eq!(r.body["status"], "success", "{:?}", r.body);
+            r.body["executionId"].as_str().unwrap().to_string()
+        }
+    };
+    let first = run().await;
+    assert!(
+        output(first.clone())
+            .await
+            .to_string()
+            .contains("a@exemple.test")
+    );
+
+    // Désactivation : l'aperçu déjà enregistré est effacé, les suivants ne sont pas gardés.
+    let off = api(
+        &app,
+        "PUT",
+        &format!("/api/workspaces/{ws}/workflows/{wf}/data"),
+        Some(json!({"keepData": false})),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(off.status, StatusCode::OK, "{:?}", off.body);
+    assert_eq!(off.body["keepData"], false);
+    assert_eq!(output(first).await, Value::Null);
+    let second = run().await;
+    let detail = api(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/executions/{second}"),
+        None,
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(detail.body["output"], Value::Null);
+    assert_eq!(detail.body["status"], "success", "le statut reste visible");
+    assert_eq!(
+        detail.body["report"]["results"]["src"]["rows"], 1,
+        "les comptes de lignes aussi"
+    );
+
+    // Effacement de l'historique : réservé aux propriétaires.
+    let member_mail = email();
+    let member = register(&app, &member_mail).await;
+    let added = api(
+        &app,
+        "POST",
+        &format!("/api/workspaces/{ws}/members"),
+        Some(json!({"email": member_mail, "role": "member"})),
+        Some(&owner),
+    )
+    .await;
+    let token = added.body["invitation"]["link"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    api(
+        &app,
+        "POST",
+        &format!("/api/auth/invitations/{token}/accept"),
+        None,
+        Some(&member),
+    )
+    .await;
+    assert_eq!(
+        api(
+            &app,
+            "DELETE",
+            &format!("/api/workspaces/{ws}/workflows/{wf}/executions"),
+            None,
+            Some(&member)
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    let cleared = api(
+        &app,
+        "DELETE",
+        &format!("/api/workspaces/{ws}/workflows/{wf}/executions"),
+        None,
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(cleared.body["deleted"], 2);
+    let left = api(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/executions?workflow={wf}"),
+        None,
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(left.body, json!([]));
+}
+
+async fn wf_keep_data(app: &Router, ws: &str, wf: &str, cookie: &str) -> bool {
+    let doc = api(
+        app,
+        "GET",
+        &format!("/api/workspaces/{ws}/workflows/{wf}"),
+        None,
+        Some(cookie),
+    )
+    .await;
+    doc.body["keepData"].as_bool().unwrap()
+}

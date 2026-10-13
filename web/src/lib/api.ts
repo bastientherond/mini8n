@@ -99,6 +99,8 @@ export interface WorkflowDoc {
 	name: string;
 	version: number;
 	active: boolean;
+	/** Aperçu des données des exécutions conservé dans l'historique. */
+	keepData?: boolean;
 	definition: unknown;
 	updatedAt: string;
 	/** Motif de désactivation automatique après une sauvegarde. */
@@ -294,6 +296,10 @@ export const api = {
 			{ name, definition, version },
 			{ keepalive },
 		),
+	setKeepData: (id: string, wid: string, keepData: boolean) =>
+		request<WorkflowDoc>('PUT', `${ws(id)}/workflows/${encodeURIComponent(wid)}/data`, { keepData }),
+	clearExecutions: (id: string, wid: string) =>
+		request<{ deleted: number }>('DELETE', `${ws(id)}/workflows/${encodeURIComponent(wid)}/executions`),
 	deleteWorkflow: (id: string, wid: string) =>
 		request<void>('DELETE', `${ws(id)}/workflows/${encodeURIComponent(wid)}`),
 

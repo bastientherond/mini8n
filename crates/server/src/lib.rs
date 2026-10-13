@@ -196,6 +196,14 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/workspaces/{ws}/workflows/{id}/live", get(live::connect))
         .route(
+            "/workspaces/{ws}/workflows/{id}/data",
+            put(wfl::set_keep_data),
+        )
+        .route(
+            "/workspaces/{ws}/workflows/{id}/executions",
+            delete(wfl::clear_executions),
+        )
+        .route(
             "/workspaces/{ws}/workflows/{id}/active",
             put(triggers::set_active),
         )
