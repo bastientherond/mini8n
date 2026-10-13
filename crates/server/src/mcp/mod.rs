@@ -36,7 +36,7 @@ const MAX_BODY: usize = 1024 * 1024;
 const KEPT_RUNS: usize = 20;
 const RUN_TTL: Duration = Duration::from_secs(30 * 60);
 /// Une IA inactive quitte l'éditeur au bout de ce délai.
-const AGENT_IDLE: Duration = Duration::from_secs(3 * 60);
+const AGENT_IDLE: Duration = Duration::from_secs(90);
 
 /// Exécution lancée par une IA, conservée pour consulter les données de chaque nœud.
 pub struct KeptRun {

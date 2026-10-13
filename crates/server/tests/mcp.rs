@@ -408,6 +408,8 @@ async fn ai_debugs_a_workflow_live() {
     )
     .await;
     assert_eq!(run["status"], "success", "{run}");
+    // Exécution terminée : l'indicateur de l'IA disparaît du canevas.
+    wait_for(&mut socket, |m| m["t"] == "focus" && m["node"].is_null()).await;
     let last = run["nodes"]
         .as_array()
         .unwrap()

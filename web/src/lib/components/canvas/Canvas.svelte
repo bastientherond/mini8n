@@ -686,7 +686,7 @@
 			.map((w) => w[0]!.toUpperCase())
 			.join('') || '?';
 
-	const peerName = (p: Peer) => (p.user === session.user?.id ? `${p.name} (autre onglet)` : p.name);
+	const peerName = (p: Peer) => (p.user === session.user?.id && !p.agent ? `${p.name} (autre onglet)` : p.name);
 
 	/** Centre la vue sur ce que fait un membre : son curseur, sinon sa sélection. */
 	function follow(p: Peer) {

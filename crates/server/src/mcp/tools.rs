@@ -20,6 +20,8 @@ use crate::workflows;
 /// Attente maximale d'une exécution dans un appel d'outil (au-delà : `get_run_result`).
 const RUN_WAIT: Duration = Duration::from_secs(25);
 const MAX_SAMPLE: usize = 20;
+/// Durée de l'indicateur « IA » sur un nœud qu'elle vient de modifier.
+const FOCUS_AFTER_EDIT: Duration = Duration::from_secs(4);
 const MAX_PAGE: usize = 100;
 /// Texte d'une cellule renvoyé à l'IA (au-delà : tronqué).
 const MAX_CELL: usize = 500;
@@ -540,6 +542,7 @@ async fn run_workflow(state: &AppState, auth: &TokenAuth, args: &Value) -> Resul
                 );
                 run["durationMs"] = json!(report.duration_ms);
                 state.live.agent_run(id, a, run);
+                state.live.agent_blur(id, a, None);
             }
             state.mcp.keep(KeptRun {
                 execution_id,
@@ -739,7 +742,15 @@ where
             let node = focus
                 .map(String::from)
                 .or_else(|| result["node_id"].as_str().map(String::from));
-            state.live.agent_focus(id, a, node);
+            state.live.agent_focus(id, a, node.clone());
+            // Indicateur visible quelques secondes, le temps de repérer la modification.
+            if let Some(node) = node {
+                let hub = state.live.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(FOCUS_AFTER_EDIT).await;
+                    hub.agent_blur(id, a, Some(&node));
+                });
+            }
         }
         let mut out = json!({ "ok": true, "version": version });
         if let Value::Object(extra) = result {

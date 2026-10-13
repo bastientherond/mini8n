@@ -318,6 +318,20 @@ impl Hub {
         }
     }
 
+    /// L'IA a fini avec `node` : son indicateur disparaît, sauf si elle est passée à un autre nœud.
+    pub fn agent_blur(&self, workflow: Uuid, id: u64, node: Option<&str>) {
+        let current = self
+            .rooms()
+            .get(&workflow)
+            .and_then(|r| r.peers.get(&id))
+            .map(|p| p.presence.focus.clone());
+        if let Some(Some(focus)) = current
+            && node.is_none_or(|n| n == focus)
+        {
+            self.act(workflow, id, Action::Focus { node: None });
+        }
+    }
+
     /// Exécution lancée par l'IA (même format que celle d'un navigateur).
     pub fn agent_run(&self, workflow: Uuid, id: u64, run: serde_json::Value) {
         match serde_json::from_value::<RunState>(run) {
