@@ -49,6 +49,7 @@ Interface (inspirée de Supabase) :
 | `web` | `web/Dockerfile` | nginx non-root : interface + reverse proxy `/api` |
 | `connectors` | `connectors/Dockerfile` | Node non-root : pilote Oracle « thin » (node-oracledb), joignable par l'API seulement |
 | `proxy` | `caddy:2.11-alpine` | TLS automatique (profil `tls`) |
+| `backup` | `postgres:18-alpine` | sauvegarde périodique de la base (`pg_dump`, volume `db-backups`) |
 
 En production, avec un nom de domaine pointant vers le serveur :
 
@@ -56,6 +57,31 @@ En production, avec un nom de domaine pointant vers le serveur :
 # .env : SITE_ADDRESS=mini8n.exemple.com  et  PUBLIC_ORIGIN=https://mini8n.exemple.com
 docker compose --profile tls up -d --build
 ```
+
+## Sauvegardes et restauration
+
+Le service `backup` sauvegarde la base toutes les `BACKUP_INTERVAL_HOURS` heures (24 par
+défaut) dans le volume `db-backups` et garde les `BACKUP_KEEP` plus récentes (14). Chaque
+sauvegarde est vérifiée (`pg_restore --list`) avant de remplacer les précédentes ; un échec
+apparaît dans `docker compose logs backup`.
+
+```bash
+./scripts/backup.sh              # sauvegarde immédiate, copiée dans ./backups (à envoyer hors site)
+./scripts/restore.sh backups/mini8n-20260101-030000.dump
+```
+
+- **Hors site** : copiez régulièrement `./backups` ailleurs (autre machine, stockage objet) —
+  un volume Docker disparaît avec le serveur.
+- **Clé des identifiants** : `secrets/credentials_key.txt` n'est volontairement **pas** dans
+  les sauvegardes. Conservez-la à part (gestionnaire de mots de passe) : sans elle, les
+  identifiants d'une base restaurée sont illisibles ; avec elle seule, une sauvegarde volée
+  ne révèle pas les mots de passe des bases et du SMTP.
+- **Restauration** : la sauvegarde est chargée dans une base neuve, puis échangée en une
+  transaction avec la base actuelle, conservée sous `mini8n_avant_<date>` pour un retour
+  arrière. Un fichier invalide ou incomplet ne modifie rien. L'API est arrêtée pendant
+  l'échange ; ses migrations mettent le schéma à jour au redémarrage.
+- **Tester** : restaurez une sauvegarde de temps en temps (par exemple sur une machine de
+  test) — une sauvegarde jamais restaurée n'est qu'une hypothèse.
 
 ## Développement local
 

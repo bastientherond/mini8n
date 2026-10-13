@@ -5,6 +5,7 @@
 #   web     (nginx non-root : interface + reverse proxy /api)
 #   connectors (Node non-root : pilote Oracle « thin », joignable par l'API seulement)
 #   proxy   (Caddy, TLS automatique — profil optionnel « tls »)
+#   backup  (pg_dump périodique vers le volume db-backups ; voir scripts/backup.sh, restore.sh)
 #
 # Démarrage : ./scripts/init-secrets.sh && docker compose up -d --build
 name: mini8n
@@ -51,6 +52,30 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  backup:
+    <<: *hardening
+    image: postgres:18-alpine
+    user: "70:70"
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    command: []
+    environment:
+      PGHOST: db
+      PGUSER: mini8n
+      PGDATABASE: mini8n
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    secrets: [db_password]
+    volumes:
+      - ./deploy/backup.sh:/backup.sh:ro
+      - db-backups:/var/lib/postgresql
+    tmpfs:
+      - /tmp:mode=1777
+    depends_on:
+      db: { condition: service_healthy }
+    networks: [data]
+    pids_limit: 50
+    mem_limit: 512m
 
   server:
     <<: *hardening
@@ -180,5 +205,6 @@ secrets:
 
 volumes:
   db-data:
+  db-backups:
   caddy-data:
   caddy-config:
