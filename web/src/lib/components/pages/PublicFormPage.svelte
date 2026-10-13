@@ -1,4 +1,5 @@
 <script lang="ts">
+	import DateField from '../DateField.svelte';
 	import CircleCheck from '@lucide/svelte/icons/circle-check';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Workflow from '@lucide/svelte/icons/workflow';
@@ -79,7 +80,9 @@
 									</div>
 								{:else}
 									<Label for="f-{field.key}">{field.label}{field.required ? ' *' : ''}</Label>
-									{#if field.kind === 'texte long'}
+									{#if field.kind === 'date'}
+										<DateField id="f-{field.key}" bind:value={values[field.key] as string} required={field.required} />
+									{:else if field.kind === 'texte long'}
 										<Textarea id="f-{field.key}" bind:value={values[field.key] as string} required={field.required} maxlength={10000} rows={5} />
 									{:else}
 										<Input
