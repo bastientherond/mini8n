@@ -107,6 +107,32 @@
 		});
 	});
 
+	/** Zone couverte par les liens : le calque SVG doit l'englober entièrement, car Safari
+	 *  ignore le survol et les clics sur ce qui dépasse de la boîte d'un SVG. */
+	const svgBox = $derived.by(() => {
+		const xs: number[] = [];
+		const ys: number[] = [];
+		for (const pts of routed.routes.values()) for (const p of pts) xs.push(p.x), ys.push(p.y);
+		if (mode.kind === 'connect') {
+			xs.push(mode.pointer.x);
+			ys.push(mode.pointer.y);
+			const start = portPoint(mode.node, mode.port);
+			if (start) xs.push(start.x), ys.push(start.y);
+		}
+		if (xs.length === 0) return { x: 0, y: 0, w: 1, h: 1 };
+		const margin = 60;
+		const x = Math.floor(Math.min(...xs) - margin);
+		const y = Math.floor(Math.min(...ys) - margin);
+		return { x, y, w: Math.ceil(Math.max(...xs) + margin) - x, h: Math.ceil(Math.max(...ys) + margin) - y };
+	});
+
+	/** Le pointeur passe d'un élément du lien à un autre (tracé ↔ corbeille) : il reste survolé. */
+	function leaveEdge(e: PointerEvent, id: string) {
+		const next = (e.relatedTarget as Element | null)?.closest?.('[data-edge]');
+		if ((next as HTMLElement | SVGElement | null)?.dataset.edge === id) return;
+		if (hoveredEdge === id) hoveredEdge = null;
+	}
+
 	const connectPreview = $derived.by(() => {
 		if (mode.kind !== 'connect') return null;
 		const start = portPoint(mode.node, mode.port);
@@ -505,7 +531,14 @@
 >
 	<div class="absolute top-0 left-0 origin-top-left" style="transform: translate({vp.x}px, {vp.y}px) scale({vp.zoom});">
 		<!-- Liens (sous les nœuds) -->
-		<svg class="pointer-events-none absolute top-0 left-0 overflow-visible" width="1" height="1" aria-hidden="true">
+		<svg
+			class="pointer-events-none absolute overflow-visible"
+			style="left: {svgBox.x}px; top: {svgBox.y}px;"
+			width={svgBox.w}
+			height={svgBox.h}
+			viewBox="{svgBox.x} {svgBox.y} {svgBox.w} {svgBox.h}"
+			aria-hidden="true"
+		>
 			{#each edgeViews as v (v.edge.id)}
 				{@const active = v.edge.selected || hoveredEdge === v.edge.id}
 				<g
@@ -515,13 +548,14 @@
 					<!-- Zone de clic élargie -->
 					<path
 						d={v.d}
-						class="pointer-events-auto cursor-pointer"
+						class="cursor-pointer"
+						style="pointer-events: stroke;"
 						fill="none"
 						stroke="transparent"
 						stroke-width="16"
 						role="presentation"
 						onpointerenter={() => (hoveredEdge = v.edge.id)}
-						onpointerleave={() => hoveredEdge === v.edge.id && (hoveredEdge = null)}
+						onpointerleave={(e) => leaveEdge(e, v.edge.id)}
 					/>
 					<path d={v.d} class="mini8n-edge-path" fill="none" />
 					<path d="M{v.end.x - 7},{v.end.y - 4.5} L{v.end.x + 1},{v.end.y} L{v.end.x - 7},{v.end.y + 4.5} Z" class="mini8n-edge-arrow" />
@@ -542,7 +576,7 @@
 					data-edge={v.edge.id}
 					role="presentation"
 					onpointerenter={() => (hoveredEdge = v.edge.id)}
-					onpointerleave={() => hoveredEdge === v.edge.id && (hoveredEdge = null)}
+					onpointerleave={(e) => leaveEdge(e, v.edge.id)}
 				>
 					{#if v.showRows && v.rows !== null}
 						<span
