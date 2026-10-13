@@ -115,8 +115,10 @@ async function query(body) {
   const maxRows = Math.min(Math.max(Number(body.maxRows) || 10_000, 1), MAX_ROWS);
   const sets = bindSets(body.binds);
   return withConnection(body.connection, async (conn) => {
-    // Simulation : transaction en lecture seule (la connexion est fermée sans validation).
-    if (body.readOnly === true) await conn.execute('SET TRANSACTION READ ONLY');
+    // Simulation : transaction en lecture seule, annulée à la fin (le serveur n'envoie
+    // alors qu'une seule lecture SELECT, vérifiée avant l'appel).
+    const readOnly = body.readOnly === true;
+    if (readOnly) await conn.execute('SET TRANSACTION READ ONLY');
     let columns = [];
     const rows = [];
     // Une exécution par jeu de valeurs (mode « pour chaque ligne »), lignes réunies.
@@ -129,6 +131,7 @@ async function query(body) {
       if (columns.length === 0) columns = (res.metaData ?? []).map((m) => m.name);
       for (const r of res.rows ?? []) rows.push(r.map(toJson));
     }
+    if (readOnly) await conn.rollback();
     return { columns, rows };
   });
 }

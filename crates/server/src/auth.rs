@@ -564,6 +564,11 @@ pub async fn change_password(
         .bind(&user.session_hash)
         .execute(&mut *tx)
         .await?;
+    // Un lien « mot de passe oublié » encore valide ne doit pas survivre au changement.
+    sqlx::query("DELETE FROM email_tokens WHERE user_id = $1 AND purpose = 'reset'")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     tracing::info!(user_id = %user.id, "mot de passe modifié");
     Ok(StatusCode::NO_CONTENT)

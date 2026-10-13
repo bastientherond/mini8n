@@ -13,9 +13,7 @@
 	// Une seule tentative par lien : le jeton est à usage unique.
 	let result = $state<Promise<void>>(new Promise(() => {}));
 	$effect(() => {
-		result = api.verifyEmail(token).then(async () => {
-			if (session.status === 'ready') await session.reload();
-		});
+		result = api.verifyEmail(token).then(() => session.reload());
 	});
 </script>
 

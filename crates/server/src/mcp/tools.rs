@@ -878,6 +878,15 @@ fn node_output(state: &AppState, auth: &TokenAuth, args: &Value) -> Result<Value
 // Modifications
 // ---------------------------------------------------------------------------
 
+/// Le workflow peut-il être exécuté par un autre (déclencheur « Appelé par un workflow ») ?
+fn callable(def: &Value) -> bool {
+    def["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|n| n.pointer("/data/kind").and_then(Value::as_str) == Some(triggers::WORKFLOW))
+}
+
 /// Applique `change` à la définition et l'enregistre (nouvelle version diffusée en direct).
 /// En cas d'enregistrement simultané par un membre, la modification est réappliquée.
 async fn save<F>(
@@ -898,9 +907,11 @@ where
     let id = uuid(args, "workflow_id")?;
     for _ in 0..3 {
         let wf = load(state, auth, id).await?;
-        // Un workflow actif tourne tout seul (planification, webhooks…) : seul un jeton
-        // « complet » peut changer ce qui s'exécutera réellement.
-        if wf.active && auth.scope != Scope::Full {
+        let full = auth.scope == Scope::Full;
+        // Un workflow actif tourne tout seul (planification, webhooks…) ; un workflow appelable
+        // (« Appelé par un workflow ») s'exécute pour de vrai depuis un workflow actif. Seul un
+        // jeton « complet » peut changer ce qui s'exécutera réellement.
+        if !full && wf.active {
             return Err(format!(
                 "« {} » est actif : désactivez-le pour le modifier, ou utilisez un jeton « complet ».",
                 wf.name
@@ -908,22 +919,35 @@ where
         }
         let mut def = wf.definition.clone();
         let result = change(&mut def)?;
+        if !full && (callable(&wf.definition) || callable(&def)) {
+            return Err(format!(
+                "« {} » peut être appelé par d'autres workflows (déclencheur « Appelé par un workflow ») : \
+                 seul un jeton « complet » peut le modifier.",
+                wf.name
+            ));
+        }
         workflows::check_definition(&def).map_err(|e| e.to_string())?;
         let mut tx = state.db.begin().await.map_err(db_err)?;
-        let saved: Option<i32> = sqlx::query_scalar(
+        // Vérification de l'état actif dans la même écriture : une activation simultanée
+        // ne peut pas s'intercaler entre la lecture et l'enregistrement.
+        let saved: Option<(i32, bool)> = sqlx::query_as(
             "UPDATE workflows SET definition = $3, version = version + 1, updated_by = $4, updated_at = now()
-             WHERE id = $1 AND workspace_id = $2 AND version = $5 RETURNING version",
+             WHERE id = $1 AND workspace_id = $2 AND version = $5 AND ($6 OR NOT active)
+             RETURNING version, active",
         )
         .bind(id)
         .bind(auth.workspace_id)
         .bind(SqlJson(&def))
         .bind(auth.user_id)
         .bind(wf.version)
+        .bind(full)
         .fetch_optional(&mut *tx)
         .await
         .map_err(db_err)?;
-        let Some(version) = saved else { continue };
-        let deactivated = if wf.active {
+        let Some((version, active)) = saved else {
+            continue;
+        };
+        let deactivated = if active {
             crate::triggers::resync_after_save(&mut tx, auth.workspace_id, id, &def)
                 .await
                 .map_err(|e| e.to_string())?

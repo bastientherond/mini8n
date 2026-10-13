@@ -180,7 +180,16 @@ pub async fn reset_password(
         .bind(user)
         .execute(&mut *tx)
         .await?;
+    // Reprise de compte : les jetons d'IA créés par un éventuel intrus sont révoqués aussi.
+    let revoked: Vec<Uuid> =
+        sqlx::query_scalar("DELETE FROM api_tokens WHERE user_id = $1 RETURNING id")
+            .bind(user)
+            .fetch_all(&mut *tx)
+            .await?;
     tx.commit().await?;
+    for token in revoked {
+        state.mcp.forget_token(&state.live, token);
+    }
     tracing::info!(user_id = %user, "mot de passe réinitialisé");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -214,7 +223,7 @@ pub async fn send_verification(
         &user.email,
         "Vérifiez votre adresse e-mail mini8n".into(),
         format!(
-            "Bonjour {},\n\nPour confirmer votre adresse, ouvrez ce lien (valable 24 heures) :\n\n{}\n",
+            "Bonjour {},\n\nPour confirmer votre adresse, ouvrez ce lien en étant connecté à votre compte mini8n (valable 24 heures) :\n\n{}\n",
             user.name,
             link(&state, &format!("verifier/{token}"))
         ),
@@ -228,10 +237,14 @@ pub struct TokenBody {
     token: String,
 }
 
-/// `POST /api/auth/email/verify` : le lien reçu prouve la possession de l'adresse.
+/// `POST /api/auth/email/verify` : le lien reçu prouve la possession de l'adresse. Il doit
+/// être ouvert depuis le compte concerné : sinon, quelqu'un qui s'inscrirait avec l'adresse
+/// d'autrui ferait vérifier son propre compte par le simple clic (ou l'antivirus) du
+/// destinataire, puis serait ajouté directement aux workspaces destinés à cette personne.
 pub async fn verify_email(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
+    user: AuthUser,
     Json(body): Json<TokenBody>,
 ) -> AppResult<StatusCode> {
     state.limits.login_ip.limit(&ip)?;
@@ -243,10 +256,11 @@ pub async fn verify_email(
     let user: Option<Uuid> = sqlx::query_scalar(
         "DELETE FROM email_tokens t USING users u
          WHERE t.token_hash = $1 AND t.purpose = 'verify' AND t.expires_at > now()
-           AND u.id = t.user_id AND u.email_normalized = t.email_normalized
+           AND u.id = t.user_id AND u.email_normalized = t.email_normalized AND t.user_id = $2
          RETURNING t.user_id",
     )
     .bind(token_hash(&body.token))
+    .bind(user.id)
     .fetch_optional(&mut *tx)
     .await?;
     let user = user.ok_or_else(invalid)?;

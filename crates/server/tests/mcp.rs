@@ -625,6 +625,57 @@ async fn token_scopes_limit_what_the_ai_can_do() {
         .unwrap();
     assert_eq!(read_only["sample"], json!([{"ro": "on"}]), "{read_only}");
 
+    // Contournements de la lecture seule (revue de sécurité) : refusés avant exécution, ou
+    // bloqués par la transaction en lecture seule.
+    for attack in [
+        "SET default_transaction_read_only = off; COMMIT; CREATE TABLE mini8n_intrus (x int)",
+        "BEGIN READ WRITE; CREATE TABLE mini8n_intrus (x int); COMMIT",
+        "SELECT set_config('transaction_read_only', 'off', false)",
+    ] {
+        call(
+            app,
+            &test,
+            "update_node",
+            json!({"workflow_id": wf, "node_id": q, "params": {"query": attack}}),
+        )
+        .await;
+        let (run, _) = call(app, &test, "run_workflow", json!({"workflow_id": wf})).await;
+        let node = run["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == q)
+            .unwrap();
+        assert_eq!(node["status"], "error", "{attack} : {node}");
+    }
+    let (probe, _) = call(
+        app,
+        &full,
+        "run_workflow",
+        json!({"workflow_id": wf, "node_id": q}),
+    )
+    .await;
+    call(app, &test, "update_node", json!({"workflow_id": wf, "node_id": q, "params": {"query": "SELECT to_regclass('mini8n_intrus')::text AS t"}})).await;
+    let (check, _) = call(
+        app,
+        &full,
+        "run_workflow",
+        json!({"workflow_id": wf, "node_id": q}),
+    )
+    .await;
+    let node = check["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == q)
+        .unwrap();
+    assert_eq!(
+        node["sample"],
+        json!([{"t": null}]),
+        "aucune table créée ({probe})"
+    );
+    call(app, &test, "update_node", json!({"workflow_id": wf, "node_id": q, "params": {"query": "SELECT current_setting('transaction_read_only') AS ro"}})).await;
+
     // Complet : exécution réelle (l'envoi est tenté et échoue : serveur SMTP fictif).
     let (run, _) = call(app, &full, "run_workflow", json!({"workflow_id": wf})).await;
     assert!(run.get("simulation").is_none());
@@ -642,6 +693,41 @@ async fn token_scopes_limit_what_the_ai_can_do() {
         .find(|n| n["id"] == q)
         .unwrap();
     assert_eq!(real["sample"], json!([{"ro": "off"}]));
+
+    // Workflow appelable par d'autres (« Appelé par un workflow ») : il s'exécute réellement
+    // depuis un workflow actif, un jeton « test » ne peut ni le modifier ni le rendre appelable.
+    let (child, _) = call(
+        app,
+        &test,
+        "create_workflow",
+        json!({"name": "Sous-workflow"}),
+    )
+    .await;
+    let child = child["workflow_id"].as_str().unwrap();
+    let (msg, error) = call(
+        app,
+        &test,
+        "add_node",
+        json!({"workflow_id": child, "kind": "trigger_workflow"}),
+    )
+    .await;
+    assert!(error && msg.as_str().unwrap().contains("appelé"), "{msg}");
+    let (_, error) = call(
+        app,
+        &full,
+        "add_node",
+        json!({"workflow_id": child, "kind": "trigger_workflow"}),
+    )
+    .await;
+    assert!(!error);
+    let (msg, error) = call(
+        app,
+        &test,
+        "add_node",
+        json!({"workflow_id": child, "kind": "filter"}),
+    )
+    .await;
+    assert!(error && msg.as_str().unwrap().contains("appelé"), "{msg}");
 
     // Workflow actif : seul un jeton complet peut le modifier.
     let (status, _, _) = api(

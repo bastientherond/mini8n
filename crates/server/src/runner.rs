@@ -212,6 +212,7 @@ impl Runner {
                 return Ok((id, done_rx));
             }
         };
+        let read_only = s.read_only;
         let (reply_tx, reply_rx) = oneshot::channel();
         let job = Job {
             workflow: workflow.clone(),
@@ -238,6 +239,9 @@ impl Runner {
 
         let runner = self.clone();
         let kind = s.trigger_kind;
+        // Les échecs d'exécutions manuelles (éditeur, IA) et des simulations ne déclenchent
+        // pas les workflows « Sur erreur » : ceux-ci agissent réellement (e-mails, messages…).
+        let automatic = !matches!(kind, "manual" | "error") && !read_only;
         tokio::spawn(async move {
             let report = reply_rx
                 .await
@@ -247,7 +251,7 @@ impl Runner {
                 tracing::error!(%e, execution_id = %id, "enregistrement de l'exécution");
             }
             // Un échec automatique déclenche les workflows « Sur erreur » (jamais en cascade).
-            if !summary.ok && kind != "error" {
+            if !summary.ok && automatic {
                 runner
                     .fire_error_triggers(
                         s.workspace_id,

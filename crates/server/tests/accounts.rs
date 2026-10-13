@@ -82,22 +82,24 @@ impl Env {
         .ok();
     }
 
-    /// Dernier e-mail reçu par `to` (attend l'envoi en tâche de fond).
-    async fn mail_to(&self, to: &str) -> Sent {
+    /// Jeton du dernier lien `…/#/<chemin>/<jeton>` reçu par `to` (attend son envoi).
+    async fn link(&self, to: &str, path: &str) -> String {
+        let marker = format!("/#/{path}/");
         for _ in 0..100 {
-            if let Some(m) = self
+            let found = self
                 .outbox
                 .lock()
                 .unwrap()
                 .iter()
                 .rev()
-                .find(|m| m.to == to)
-            {
-                return m.clone();
+                .find(|m| m.to == to && m.body.contains(&marker))
+                .cloned();
+            if let Some(m) = found {
+                return token_in(&m, path);
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        panic!("aucun e-mail pour {to}");
+        panic!("aucun lien {path} pour {to}");
     }
 
     fn mails_to(&self, to: &str) -> usize {
@@ -240,8 +242,7 @@ async fn first_account_then_invitations_only() {
     .await;
     assert_eq!(pending.body[0]["email"], "chloe@exemple.test");
 
-    let mail = env.mail_to("chloe@exemple.test").await;
-    let token = token_in(&mail, "invitation");
+    let token = env.link("chloe@exemple.test", "invitation").await;
     let shown = api(
         app,
         "GET",
@@ -318,7 +319,7 @@ async fn first_account_then_invitations_only() {
         Some(&admin),
     )
     .await;
-    let dan = token_in(&env.mail_to("dan@exemple.test").await, "invitation");
+    let dan = env.link("dan@exemple.test", "invitation").await;
     let pending = api(
         app,
         "GET",
@@ -376,6 +377,53 @@ async fn password_reset_and_email_verification() {
     let alice = first.cookie.unwrap();
     assert_eq!(first.body["user"]["emailVerified"], false);
 
+    // Vérification d'adresse : le lien ne vaut que pour le compte connecté qui l'a demandé.
+    assert_eq!(
+        api(
+            app,
+            "POST",
+            "/api/auth/email/send-verification",
+            None,
+            Some(&alice)
+        )
+        .await
+        .status,
+        StatusCode::ACCEPTED
+    );
+    let verify = env.link("alice@exemple.test", "verifier").await;
+    assert_eq!(
+        api(
+            app,
+            "POST",
+            "/api/auth/email/verify",
+            Some(json!({"token": verify})),
+            None
+        )
+        .await
+        .status,
+        StatusCode::UNAUTHORIZED,
+        "sans session : refusé"
+    );
+    // Jeton d'IA d'Alice : révoqué par la réinitialisation du mot de passe (reprise de compte).
+    let ws = api(
+        app,
+        "POST",
+        "/api/workspaces",
+        Some(json!({"name": "Alice"})),
+        Some(&alice),
+    )
+    .await;
+    let alice_ws = ws.body["id"].as_str().unwrap().to_string();
+    let token = api(
+        app,
+        "POST",
+        &format!("/api/workspaces/{alice_ws}/tokens"),
+        Some(json!({"name": "IA", "scope": "complet"})),
+        Some(&alice),
+    )
+    .await;
+    let ai_token = token.body["token"].as_str().unwrap().to_string();
+
     // Adresse inconnue : même réponse, aucun e-mail.
     let r = api(
         app,
@@ -395,7 +443,7 @@ async fn password_reset_and_email_verification() {
     )
     .await;
     assert_eq!(r.status, StatusCode::ACCEPTED);
-    let token = token_in(&env.mail_to("alice@exemple.test").await, "reinitialiser");
+    let token = env.link("alice@exemple.test", "reinitialiser").await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(env.mails_to("personne@exemple.test"), 0);
 
@@ -471,6 +519,21 @@ async fn password_reset_and_email_verification() {
     )
     .await;
     assert_eq!(login.status, StatusCode::OK);
+    // Après réinitialisation, le jeton d'IA ne fonctionne plus.
+    let mcp = |t: String| {
+        let app = app.clone();
+        async move {
+            let req = axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/mcp")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {t}"))
+                .body(Body::from(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#))
+                .unwrap();
+            app.oneshot(req).await.unwrap().status()
+        }
+    };
+    assert_eq!(mcp(ai_token).await, StatusCode::UNAUTHORIZED);
     // Le lien reçu prouve l'adresse.
     assert_eq!(login.body["user"]["emailVerified"], true);
     let alice = login.cookie.unwrap();
@@ -505,7 +568,7 @@ async fn password_reset_and_email_verification() {
         Some(&alice),
     )
     .await;
-    let invite = token_in(&env.mail_to("bob@exemple.test").await, "invitation");
+    let invite = env.link("bob@exemple.test", "invitation").await;
     let bob = api(
         app,
         "POST",
@@ -515,6 +578,20 @@ async fn password_reset_and_email_verification() {
     )
     .await;
     let bob = bob.cookie.unwrap();
+    // Le lien de vérification d'Alice ne vérifie pas le compte de Bob (ni celui d'Alice
+    // depuis la session de Bob).
+    assert_eq!(
+        api(
+            app,
+            "POST",
+            "/api/auth/email/verify",
+            Some(json!({"token": verify})),
+            Some(&bob)
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
     // (adresse déjà vérifiée par l'invitation reçue par e-mail)
     assert_eq!(
         api(

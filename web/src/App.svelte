@@ -57,7 +57,8 @@
 				<p>Le serveur mini8n est injoignable.</p>
 				<Button variant="outline" size="sm" onclick={() => (ready = session.init())}>Réessayer</Button>
 			</div>
-		{:else if router.route.name === 'verify'}
+		{:else if router.route.name === 'verify' && session.status === 'ready'}
+			<!-- Lien de vérification : à ouvrir depuis le compte concerné (connexion d'abord). -->
 			<VerifyEmailPage token={router.route.token} />
 		{:else if router.route.name === 'invitation' && session.status !== 'loading'}
 			<InvitationPage token={router.route.token} />
