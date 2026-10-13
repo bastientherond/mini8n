@@ -43,6 +43,8 @@ pub fn catalog() -> String {
 struct JsHost {
     call_workflow: Option<Function>,
     run_integration: Option<Function>,
+    /// `onProgress("start" | "end", nodeId, resultJson?)` (synchrone, erreurs ignorées).
+    on_progress: Option<Function>,
 }
 
 impl Host for JsHost {
@@ -103,12 +105,25 @@ impl Host for JsHost {
             data::from_parquet(out.to_vec())
         })
     }
+
+    fn node_started(&self, node_id: &str) {
+        if let Some(f) = &self.on_progress {
+            let _ = f.call2(&JsValue::NULL, &"start".into(), &node_id.into());
+        }
+    }
+
+    fn node_finished(&self, node_id: &str, result: &crate::workflow::NodeResult) {
+        if let (Some(f), Ok(json)) = (&self.on_progress, serde_json::to_string(result)) {
+            let _ = f.call3(&JsValue::NULL, &"end".into(), &node_id.into(), &json.into());
+        }
+    }
 }
 
 /// Exécute un workflow (JSON). Retourne `{ report: string (JSON), data: { [nodeId]: Uint8Array (Parquet) } }`.
 ///
 /// - `trigger` : `{ nodeId, data: Uint8Array }` pour simuler le déclencheur qui démarre l'exécution ;
-/// - `host` : `{ callWorkflow }` pour le nœud « Exécuter un workflow ».
+/// - `host` : `{ callWorkflow }` pour le nœud « Exécuter un workflow », `{ onProgress }` pour
+///   suivre l'exécution nœud par nœud.
 #[wasm_bindgen(js_name = runWorkflow)]
 pub async fn run_workflow(
     workflow_json: String,
@@ -137,7 +152,11 @@ pub async fn run_workflow(
             .dyn_into::<Function>()
             .ok()
     };
-    let (call_workflow, run_integration) = (host_fn("callWorkflow"), host_fn("runIntegration"));
+    let (call_workflow, run_integration, on_progress) = (
+        host_fn("callWorkflow"),
+        host_fn("runIntegration"),
+        host_fn("onProgress"),
+    );
 
     let opts = workflow::RunOptions {
         target: target.as_deref(),
@@ -149,6 +168,7 @@ pub async fn run_workflow(
         &JsHost {
             call_workflow,
             run_integration,
+            on_progress,
         },
     )
     .await;

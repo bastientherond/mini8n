@@ -317,6 +317,10 @@ pub async fn set_active(
         .await?;
     tx.commit().await?;
     tracing::info!(workflow_id = %id, active = body.active, by = %user.id, "activation du workflow");
+    state.live.publish(
+        id,
+        serde_json::json!({ "t": "active", "active": body.active }),
+    );
     Ok(Json(activation_state(&state.db, id).await?))
 }
 

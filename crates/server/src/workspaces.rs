@@ -172,6 +172,7 @@ pub async fn delete(
         .bind(ws)
         .execute(&state.db)
         .await?;
+    state.live.revoke(ws, None);
     tracing::info!(workspace_id = %ws, user_id = %user.id, "workspace supprimé");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -355,5 +356,6 @@ pub async fn remove_member(
         });
     }
     tx.commit().await?;
+    state.live.revoke(ws, Some(member));
     Ok(StatusCode::NO_CONTENT)
 }

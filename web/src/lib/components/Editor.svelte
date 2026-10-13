@@ -7,6 +7,7 @@
 	import { onMount, untrack } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import { errorMessage } from '$lib/api';
+	import { live } from '$lib/live.svelte';
 	import { router } from '$lib/router.svelte';
 	import { wf } from '$lib/workflow.svelte';
 	import EditorToolbar from './EditorToolbar.svelte';
@@ -55,6 +56,34 @@
 				router.replace({ name: 'workflows', ws: workspaceId });
 			});
 	});
+
+	// Collaboration en direct sur le workflow ouvert.
+	$effect(() => {
+		const [ws, id] = [wf.workspaceId, wf.workflowId];
+		if (!ws || !id) return;
+		untrack(() =>
+			live.connect(ws, id, {
+				onsaved: (doc) => wf.receive(doc),
+				onresync: () => void wf.resync(),
+				onactive: () => void wf.refreshTriggers(),
+				onrun: (peer, run) => wf.showRemoteRun(peer, run),
+				ongone: (reason) => {
+					if (reason === 'full') {
+						toast.info('Trop de participants sur ce workflow : la présence des autres n’est pas affichée.');
+						return;
+					}
+					toast.error(reason === 'deleted' ? 'Ce workflow a été supprimé par un autre membre.' : 'Vous n’avez plus accès à ce workflow.');
+					wf.close();
+					router.replace({ name: 'workflows', ws });
+				},
+			}),
+		);
+		return () => live.disconnect();
+	});
+
+	// Ce que les autres voient de moi : sélection et nœud en cours de paramétrage.
+	$effect(() => live.select(wf.nodes.filter((n) => n.selected).map((n) => n.id)));
+	$effect(() => live.focus(wf.openNodeId));
 
 	onMount(() => {
 		// Sauvegarde des modifications en attente quand l'onglet est masqué ou fermé.
@@ -146,7 +175,7 @@
 <NodeDetails onrun={runTo} />
 
 <div class="flex h-full min-h-0 flex-col">
-	<EditorToolbar onrun={runAll} onarrange={() => canvas?.arrange()} />
+	<EditorToolbar onrun={runAll} />
 	<div class="flex min-h-0 flex-1">
 		{#if paletteOpen}
 			<Palette onadd={addAtCenter} onclose={() => setPalette(false)} />

@@ -12,6 +12,8 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import { api, errorMessage } from '$lib/api';
+	import { brandOfCredential } from '$lib/brands';
+	import BrandLogo from './BrandLogo.svelte';
 	import { newToken } from '$lib/engine/convert';
 	import { formatBytes } from '$lib/icons';
 	import { resources } from '$lib/resources.svelte';
@@ -177,11 +179,14 @@
 		<div class="flex gap-1">
 			<Select.Root type="single" value={text} onValueChange={(v) => onchange(v)}>
 				<Select.Trigger id={fieldId} class="min-w-0 flex-1">
-					{credentials.find((c) => c.id === text)?.name ?? (text ? 'Identifiant introuvable' : 'Choisir un identifiant…')}
+					{@const current = credentials.find((c) => c.id === text)}
+					{#if current}<BrandLogo brand={brandOfCredential(current.kind, current.summary)} class="size-5 rounded" />{/if}
+					<span class="truncate">{current?.name ?? (text ? 'Identifiant introuvable' : 'Choisir un identifiant…')}</span>
 				</Select.Trigger>
 				<Select.Content>
 					{#each credentials as c (c.id)}
 						<Select.Item value={c.id} label={c.name}>
+							<BrandLogo brand={brandOfCredential(c.kind, c.summary)} class="size-5 rounded" />
 							<span class="truncate">{c.name}</span>
 							{#if c.summary.host}<span class="text-muted-foreground ml-auto text-xs">{c.summary.host}</span>{/if}
 						</Select.Item>

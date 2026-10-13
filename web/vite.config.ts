@@ -16,7 +16,8 @@ export default defineConfig({
   server: {
     // En développement, l'API Rust tourne sur le port 3000.
     proxy: {
-      '/api': { target: 'http://127.0.0.1:3000', xfwd: true },
+      // ws : collaboration en direct sur le canevas.
+      '/api': { target: 'http://127.0.0.1:3000', xfwd: true, ws: true },
     },
   },
 })

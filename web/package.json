@@ -10,7 +10,7 @@
     "build": "npm run wasm && vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
-    "test": "node --test src/lib/canvas/*.test.ts"
+    "test": "node --test src/lib/canvas/*.test.ts src/lib/*.test.ts"
   },
   "devDependencies": {
     "@fontsource-variable/inter": "^5.3.0",

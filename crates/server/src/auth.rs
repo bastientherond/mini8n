@@ -269,6 +269,23 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
+impl AuthUser {
+    /// Hash du jeton de la session qui a authentifié la requête.
+    pub(crate) fn session_hash(&self) -> &[u8] {
+        &self.session_hash
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests(id: Uuid, name: &str) -> Self {
+        Self {
+            id,
+            email: format!("{name}@exemple.test"),
+            name: name.into(),
+            session_hash: vec![],
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------

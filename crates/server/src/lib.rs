@@ -8,6 +8,7 @@ pub mod error;
 pub mod executions;
 pub mod files;
 pub mod integrations;
+pub mod live;
 pub mod net;
 pub mod runner;
 pub mod schedule;
@@ -49,6 +50,8 @@ pub struct Limits {
     pub hooks: RateLimiter,
     /// Points d'entrée publics : par IP.
     pub public_ip: RateLimiter,
+    /// Connexions de collaboration en direct : par utilisateur.
+    pub live: RateLimiter,
 }
 
 impl Default for Limits {
@@ -60,6 +63,7 @@ impl Default for Limits {
             writes: RateLimiter::new(60, 60),
             hooks: RateLimiter::new(120, 120),
             public_ip: RateLimiter::new(300, 300),
+            live: RateLimiter::new(30, 30),
         }
     }
 }
@@ -75,6 +79,8 @@ pub struct AppState {
     pub runner: runner::Runner,
     /// Chiffrement des identifiants.
     pub vault: Arc<crypto::Vault>,
+    /// Collaboration en direct (curseurs, sélections, sauvegardes diffusées).
+    pub live: Arc<live::Hub>,
 }
 
 impl AppState {
@@ -89,6 +95,7 @@ impl AppState {
             config,
             limits: Arc::new(Limits::default()),
             hash_permits: Arc::new(Semaphore::new(4)),
+            live: Arc::new(live::Hub::default()),
         }
     }
 }
@@ -142,6 +149,7 @@ pub fn app(state: AppState) -> Router {
             "/workspaces/{ws}/workflows/{id}",
             get(wfl::get).put(wfl::update).delete(wfl::delete),
         )
+        .route("/workspaces/{ws}/workflows/{id}/live", get(live::connect))
         .route(
             "/workspaces/{ws}/workflows/{id}/active",
             put(triggers::set_active),

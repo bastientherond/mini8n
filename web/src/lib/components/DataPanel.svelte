@@ -167,7 +167,13 @@
 				</div>
 			{:else if !bytes}
 				<div class="text-muted-foreground flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-sm">
-					<p>Pas encore de données : exécutez le nœud pour les voir.</p>
+					<p>
+						{#if result?.status === 'success' && !wf.running}
+							Exécuté par un autre membre : les données sont restées dans son navigateur. Exécutez le nœud pour les voir.
+						{:else}
+							Pas encore de données : exécutez le nœud pour les voir.
+						{/if}
+					</p>
 					{@render emptyAction?.()}
 				</div>
 			{:else if previewError}

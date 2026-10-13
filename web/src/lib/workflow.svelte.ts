@@ -4,9 +4,11 @@
 import { toast } from 'svelte-sonner';
 import { ApiError, api, errorMessage, type TriggerInfo, type WorkflowDoc, type WorkflowSummary } from './api';
 import { engine } from './engine/client';
+import { type Peer, type RunState, live } from './live.svelte';
 import { newToken, toEngineWorkflow } from './engine/convert';
 import type { EngineWorkflow, NodeResult, NodeSpec, RunReport } from './engine/types';
 import { removeNodesKeepingLinks } from './canvas/graph';
+import { mergeGraph } from './canvas/merge';
 import { sanitizeWorkflow } from './sanitize';
 
 export type StepData = {
@@ -58,8 +60,21 @@ export type SaveState = 'idle' | 'saving' | 'saved' | 'error' | 'conflict';
 
 const LAST_WORKFLOW_KEY = 'mini8n.lastWorkflow';
 const SAVE_DELAY_MS = 800;
+/** Sauvegardes refusées (409) puis fusionnées avec la version du serveur, à la suite. */
+const MAX_REBASES = 3;
 
 export const inputHandle = (index: number) => `in-${index}`;
+
+/** Graphe réduit au contenu enregistré (sans état d'affichage), pour comparer et fusionner. */
+type Plain = Pick<SavedWorkflow, 'name' | 'nodes' | 'edges'>;
+
+function plain(g: { name: string; nodes: SavedWorkflow['nodes']; edges: SavedWorkflow['edges'] }): Plain {
+	return {
+		name: g.name,
+		nodes: g.nodes.map((n) => ({ id: n.id, position: n.position, data: n.data })),
+		edges: g.edges.map((e) => ({ id: e.id, source: e.source, target: e.target, targetHandle: e.targetHandle ?? inputHandle(0) })),
+	};
+}
 
 const uid = () => crypto.randomUUID().slice(0, 8);
 
@@ -74,7 +89,14 @@ class WorkflowState {
 	data = $state.raw<Record<string, Uint8Array>>({});
 	lastRun = $state.raw<RunReport | null>(null);
 	running = $state(false);
+	/** Nœuds de l'exécution affichée (la sienne ou celle d'un autre membre) pas encore terminés. */
 	runningIds = $state.raw<Set<string>>(new Set());
+	/** Nœud en cours d'exécution. */
+	activeId = $state<string | null>(null);
+	/** Membre dont l'exécution est affichée en direct (`null` : la sienne ou aucune). */
+	runOwner = $state.raw<Peer | null>(null);
+	/** Nœuds de l'exécution locale en cours. */
+	private runIds: string[] = [];
 	loadError = $state<string | null>(null);
 
 	// --- Serveur ---
@@ -93,6 +115,7 @@ class WorkflowState {
 	private savedSnapshot = '';
 	private saveTimer: ReturnType<typeof setTimeout> | undefined;
 	private saving: Promise<void> | null = null;
+	private rebases = 0;
 
 	selected = $derived(this.nodes.find((n) => n.selected) ?? null);
 	/** Nœud affiché dans la vue détaillée (modale de paramétrage). */
@@ -159,6 +182,24 @@ class WorkflowState {
 			{ id: `e-${uid()}`, source: edge.source, target: node.id, sourceHandle: 'out', targetHandle: inputHandle(0) },
 			{ id: `e-${uid()}`, source: node.id, target: edge.target, sourceHandle: 'out', targetHandle: edge.targetHandle ?? inputHandle(0) },
 		];
+		return node.id;
+	}
+
+	/**
+	 * Nouveau nœud relié à un nœud existant (lien tiré dans le vide) : branché sur la sortie
+	 * de `source`, ou sur l'entrée `input` de `target`. Une seule étape d'annulation.
+	 */
+	addLinked(kind: string, position: XYPosition, link: { source: string } | { target: string; input: number }) {
+		const spec = this.spec(kind);
+		if (!spec || ('source' in link && spec.inputs.length === 0)) return;
+		this.checkpoint();
+		const node = this.makeNode(spec, position, true);
+		this.nodes = [...this.nodes.map((n) => (n.selected ? { ...n, selected: false } : n)), node];
+		const edge: Edge =
+			'source' in link
+				? { id: `e-${uid()}`, source: link.source, target: node.id, sourceHandle: 'out', targetHandle: inputHandle(0) }
+				: { id: `e-${uid()}`, source: node.id, target: link.target, sourceHandle: 'out', targetHandle: inputHandle(link.input) };
+		this.edges = [...this.edges.map((e) => (e.selected ? { ...e, selected: false } : e)), edge];
 		return node.id;
 	}
 
@@ -344,17 +385,40 @@ class WorkflowState {
 		return toEngineWorkflow({ nodes: this.nodes, edges: this.edges });
 	}
 
-	/** Exécute le workflow entier, ou seulement jusqu'au nœud `target`. */
+	/** Exécute le workflow entier, ou seulement jusqu'au nœud `target`. La progression
+	 *  (nœud en cours, résultats au fil de l'eau) est affichée et partagée en direct. */
 	async run(target?: string): Promise<RunReport | null> {
 		if (this.running) return null;
 		this.running = true;
+		this.runOwner = null;
 		const workflow = this.toEngine();
-		this.runningIds = new Set(target ? this.ancestors(target) : workflow.nodes.map((n) => n.id));
+		const ids = target ? this.ancestors(target) : workflow.nodes.map((n) => n.id);
+		this.runIds = ids;
+		this.runningIds = new Set(ids);
+		this.activeId = null;
+		// Les résultats précédents des nœuds relancés disparaissent pendant l'exécution.
+		const previous = target ? { ...this.results } : {};
+		for (const id of ids) delete previous[id];
+		this.results = previous;
+		this.shareRun();
+		let report: RunReport | undefined;
 		try {
-			const { report, data } = await engine.run(workflow, target, this.workspaceId ?? undefined);
+			const out = await engine.run(workflow, target, this.workspaceId ?? undefined, (p) => {
+				if (p.kind === 'start') {
+					this.activeId = p.node;
+				} else {
+					this.results = { ...this.results, [p.node]: p.result };
+					const pending = new Set(this.runningIds);
+					pending.delete(p.node);
+					this.runningIds = pending;
+					if (this.activeId === p.node) this.activeId = null;
+				}
+				this.shareRun();
+			});
+			report = out.report;
 			// Une exécution partielle conserve les résultats des autres nœuds.
 			this.results = target ? { ...this.results, ...report.results } : report.results;
-			const merged = target ? { ...this.data, ...data } : { ...data };
+			const merged = target ? { ...this.data, ...out.data } : { ...out.data };
 			for (const [id, r] of Object.entries(report.results)) {
 				if (r.status !== 'success') delete merged[id];
 			}
@@ -364,6 +428,63 @@ class WorkflowState {
 		} finally {
 			this.running = false;
 			this.runningIds = new Set();
+			this.activeId = null;
+			this.shareRun(report ?? { ok: false, error: 'Exécution interrompue', durationMs: 0 });
+			this.runIds = [];
+		}
+	}
+
+	/** Diffuse l'état de l'exécution locale ; `end` : bilan final. */
+	private shareRun(end?: Pick<RunReport, 'ok' | 'error' | 'durationMs'>) {
+		const results: RunState['results'] = {};
+		for (const id of this.runIds) if (this.results[id]) results[id] = this.results[id];
+		live.run({
+			pending: end ? [] : [...this.runningIds],
+			active: end ? null : this.activeId,
+			results,
+			done: !!end,
+			...(end && { ok: end.ok && !end.error, error: end.error, durationMs: end.durationMs }),
+		});
+	}
+
+	/**
+	 * Exécution d'un autre membre, affichée en direct : mêmes nœuds en cours, mêmes
+	 * résultats (sans les données, qui restent dans son navigateur). `null` : abandonnée.
+	 * Sa propre exécution, si elle est en cours, reste prioritaire.
+	 */
+	showRemoteRun(peer: Peer, run: RunState | null) {
+		if (this.running) return;
+		if (!run) {
+			if (this.runOwner?.id === peer.id) {
+				this.runOwner = null;
+				this.runningIds = new Set();
+				this.activeId = null;
+			}
+			return;
+		}
+		const results = { ...this.results };
+		const data = { ...this.data };
+		for (const id of [...run.pending, ...Object.keys(run.results)]) {
+			delete results[id];
+			delete data[id];
+		}
+		this.results = { ...results, ...run.results };
+		this.data = data;
+		if (run.done) {
+			this.runOwner = null;
+			this.runningIds = new Set();
+			this.activeId = null;
+			this.lastRun = {
+				ok: run.ok ?? true,
+				error: run.error,
+				order: Object.keys(run.results),
+				results: run.results,
+				durationMs: run.durationMs ?? 0,
+			};
+		} else {
+			this.runOwner = peer;
+			this.runningIds = new Set(run.pending);
+			this.activeId = run.active;
 		}
 	}
 
@@ -401,8 +522,7 @@ class WorkflowState {
 	}
 
 	private snapshot(): string {
-		const { name, nodes, edges } = this.serialize();
-		return JSON.stringify({ name, nodes, edges });
+		return JSON.stringify(plain(this));
 	}
 
 	// --- Synchronisation serveur --------------------------------------------
@@ -448,11 +568,77 @@ class WorkflowState {
 		clearTimeout(this.saveTimer);
 		this.workflowId = null;
 		this.openNodeId = null;
+		this.runOwner = null;
+		this.activeId = null;
+		if (!this.running) this.runningIds = new Set();
 		this.active = false;
 		this.triggers = [];
 		this.apply({ version: 1, name: '', nodes: [], edges: [] });
 		this.saveState = 'idle';
 		this.saveError = null;
+	}
+
+	/** Version enregistrée reçue en direct (sauvegarde d'un autre membre, ou la sienne). */
+	async receive(doc: WorkflowDoc) {
+		if (this.saving) await this.saving;
+		if (doc.id === this.workflowId && doc.version > this.serverVersion) this.integrate(doc);
+	}
+
+	/** Après une coupure de la connexion en direct : rattrape les sauvegardes manquées. */
+	async resync() {
+		const [ws, id] = [this.workspaceId, this.workflowId];
+		if (!ws || !id) return;
+		try {
+			await this.receive(await api.workflow(ws, id));
+		} catch {
+			// la prochaine sauvegarde signalera le problème
+		}
+	}
+
+	/**
+	 * Adopte une version plus récente du serveur sans perdre les modifications locales
+	 * non enregistrées : fusion à trois voies (voir $lib/canvas/merge). La sélection, le
+	 * nœud ouvert et les résultats d'exécution sont conservés ; l'historique d'annulation
+	 * est rejoué sur la nouvelle version (annuler ne défait que ses propres modifications).
+	 */
+	private integrate(doc: WorkflowDoc) {
+		let saved: SavedWorkflow;
+		try {
+			saved = sanitizeWorkflow({ ...(doc.definition as object), name: doc.name }, this.catalog);
+		} catch {
+			return;
+		}
+		const remote = plain(saved);
+		const base: Plain = this.savedSnapshot ? JSON.parse(this.savedSnapshot) : remote;
+		const local = plain(this);
+		const merged = this.snapshot() === this.savedSnapshot ? remote : mergeGraph(base, local, remote);
+
+		const selectedNodes = new Set(this.nodes.filter((n) => n.selected).map((n) => n.id));
+		const selectedEdges = new Set(this.edges.filter((e) => e.selected).map((e) => e.id));
+		this.name = merged.name;
+		this.nodes = merged.nodes.map((n) => ({ ...n, type: 'step', selected: selectedNodes.has(n.id) }));
+		this.edges = merged.edges.map((e) => ({ ...e, sourceHandle: 'out', selected: selectedEdges.has(e.id) }));
+		if (this.openNodeId && !merged.nodes.some((n) => n.id === this.openNodeId)) this.openNodeId = null;
+
+		const rebase = (s: GraphState): GraphState => {
+			const m = mergeGraph(base, plain({ name: base.name, ...s }), remote);
+			return {
+				nodes: m.nodes.map((n) => ({ ...n, type: 'step', selected: false })),
+				edges: m.edges.map((e) => ({ ...e, sourceHandle: 'out', selected: false })),
+			};
+		};
+		this.undoStack = this.undoStack.map(rebase);
+		this.redoStack = this.redoStack.map(rebase);
+
+		this.serverVersion = doc.version;
+		this.savedSnapshot = JSON.stringify(remote);
+		if (this.active !== doc.active) {
+			this.active = doc.active;
+			if (doc.active) void this.refreshTriggers();
+			else this.triggers = [];
+		}
+		this.setSummary(doc.id, { name: doc.name, version: doc.version, active: doc.active });
+		if (this.saveState === 'conflict') this.saveState = 'saved';
 	}
 
 	async refreshList() {
@@ -574,6 +760,7 @@ class WorkflowState {
 		const { name, nodes, edges } = this.serialize();
 		const workflowId = this.workflowId;
 		this.saveState = 'saving';
+		let rebased = false;
 		this.saving = (async () => {
 			try {
 				const doc = await api.saveWorkflow(
@@ -597,18 +784,35 @@ class WorkflowState {
 				this.setSummary(workflowId, { active: doc.active, version: doc.version });
 				this.saveState = 'saved';
 				this.saveError = null;
+				this.rebases = 0;
 				const summary = this.workflows.find((w) => w.id === workflowId);
 				if (summary && summary.name !== doc.name) {
 					this.workflows = this.workflows.map((w) => (w.id === workflowId ? { ...w, name: doc.name } : w));
 				}
 			} catch (e) {
-				this.saveState = e instanceof ApiError && e.status === 409 ? 'conflict' : 'error';
+				const conflict = e instanceof ApiError && e.status === 409;
+				// Modifié entre-temps par quelqu'un d'autre : fusion avec sa version, puis nouvel essai.
+				if (conflict && this.rebases < MAX_REBASES) {
+					this.rebases++;
+					try {
+						const latest = await api.workflow(this.workspaceId!, workflowId);
+						if (this.workflowId !== workflowId) return;
+						this.integrate(latest);
+						this.saveState = 'saved';
+						rebased = true;
+						return;
+					} catch {
+						// conflit signalé ci-dessous
+					}
+				}
+				this.saveState = conflict ? 'conflict' : 'error';
 				this.saveError = errorMessage(e);
 			} finally {
 				this.saving = null;
 			}
 		})();
 		await this.saving;
+		if (rebased) await this.save(keepalive);
 	}
 
 	private setSummary(id: string, patch: Partial<WorkflowSummary>) {

@@ -38,11 +38,39 @@
 	}
 
 	const shortcuts = [
-		{ keys: [mod, 'K'], label: 'Ouvrir la palette de commandes' },
-		{ keys: [mod, 'Entrée'], label: 'Exécuter le workflow (éditeur)' },
-		{ keys: ['Retour arrière'], label: 'Supprimer les nœuds / liens sélectionnés' },
-		{ keys: ['Maj', 'glisser'], label: 'Sélection multiple sur le canevas' },
-		{ keys: ['Échap'], label: 'Fermer un menu ou un dialogue' },
+		{
+			title: 'Général',
+			items: [
+				{ keys: [mod, 'K'], label: 'Palette de commandes' },
+				{ keys: [mod, 'Entrée'], label: 'Exécuter le workflow' },
+				{ keys: ['/'], label: 'Rechercher un nœud dans la palette' },
+				{ keys: ['Échap'], label: 'Fermer un menu, annuler le geste en cours' },
+			],
+		},
+		{
+			title: 'Se déplacer sur le canevas',
+			items: [
+				{ keys: ['Glisser le fond'], label: 'Déplacer la vue (ou molette, ou Espace + glisser)' },
+				{ keys: [mod, 'molette'], label: 'Zoomer autour du pointeur' },
+				{ keys: ['Maj', '1'], label: 'Tout afficher' },
+			],
+		},
+		{
+			title: 'Modifier le workflow',
+			items: [
+				{ keys: ['Clic'], label: 'Sélectionner un nœud : ses actions apparaissent au-dessus' },
+				{ keys: ['Double-clic'], label: 'Paramétrer un nœud (ou Entrée sur la sélection)' },
+				{ keys: ['Tirer un port'], label: 'Relier deux nœuds ; lâché dans le vide : ajouter un nœud relié' },
+				{ keys: ['Maj', 'glisser'], label: 'Sélectionner plusieurs nœuds' },
+				{ keys: [mod, 'clic'], label: 'Ajouter à la sélection' },
+				{ keys: [mod, 'A'], label: 'Tout sélectionner' },
+				{ keys: ['Alt', 'glisser'], label: 'Déplacer sans aimantation à la grille' },
+				{ keys: ['Retour arrière'], label: 'Supprimer la sélection (les voisins restent reliés)' },
+				{ keys: ['Maj', 'Alt', 'T'], label: 'Ranger et aligner les nœuds' },
+				{ keys: [mod, 'Z'], label: 'Annuler' },
+				{ keys: [mod, 'Maj', 'Z'], label: 'Rétablir' },
+			],
+		},
 	];
 </script>
 
@@ -97,20 +125,28 @@
 </Dialog.Root>
 
 <Dialog.Root bind:open={ui.shortcuts}>
-	<Dialog.Content class="sm:max-w-md">
+	<Dialog.Content class="flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-lg">
 		<Dialog.Header>
-			<Dialog.Title>Raccourcis clavier</Dialog.Title>
+			<Dialog.Title>Gestes et raccourcis</Dialog.Title>
+			<Dialog.Description>Comment manipuler le canevas et ses nœuds.</Dialog.Description>
 		</Dialog.Header>
-		<ul class="divide-y">
-			{#each shortcuts as s (s.label)}
-				<li class="flex items-center justify-between gap-4 py-2 text-sm">
-					<span>{s.label}</span>
-					<span class="flex gap-1">
-						{#each s.keys as k (k)}<kbd class="bg-muted rounded border px-1.5 py-0.5 font-mono text-xs">{k}</kbd>{/each}
-					</span>
-				</li>
+		<div class="-mx-6 min-h-0 space-y-4 overflow-y-auto px-6">
+			{#each shortcuts as group (group.title)}
+				<section>
+					<h3 class="text-muted-foreground mb-1 text-xs font-semibold tracking-wide uppercase">{group.title}</h3>
+					<ul class="divide-y">
+						{#each group.items as s (s.label)}
+							<li class="flex items-center justify-between gap-4 py-1.5 text-sm">
+								<span>{s.label}</span>
+								<span class="flex shrink-0 gap-1">
+									{#each s.keys as k (k)}<kbd class="bg-muted rounded border px-1.5 py-0.5 font-mono text-xs whitespace-nowrap">{k}</kbd>{/each}
+								</span>
+							</li>
+						{/each}
+					</ul>
+				</section>
 			{/each}
-		</ul>
+		</div>
 	</Dialog.Content>
 </Dialog.Root>
 

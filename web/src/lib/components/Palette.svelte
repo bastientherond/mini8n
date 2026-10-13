@@ -8,8 +8,10 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import type { NodeSpec } from '$lib/engine/types';
 	import { cn } from '$lib/utils';
+	import { brandOfNode } from '$lib/brands';
 	import { categoryAccent, categoryLabels, iconFor } from '$lib/icons';
 	import { wf } from '$lib/workflow.svelte';
+	import BrandLogo from './BrandLogo.svelte';
 
 	let { onadd, onclose }: { onadd: (kind: string) => void; onclose: () => void } = $props();
 
@@ -166,6 +168,7 @@
 						<ul class="px-2">
 							{#each group.items as spec (spec.kind)}
 								{@const Icon = iconFor(spec.icon)}
+								{@const brand = brandOfNode(spec.kind)}
 								<li>
 									<Tooltip.Root delayDuration={500}>
 										<Tooltip.Trigger>
@@ -177,9 +180,13 @@
 													ondragstart={(e) => ondragstart(e, spec.kind)}
 													onclick={() => onadd(spec.kind)}
 												>
-													<span class={cn('flex size-8 shrink-0 items-center justify-center rounded-md', categoryAccent[spec.category])}>
-														<Icon class="size-4" />
-													</span>
+													{#if brand}
+														<BrandLogo {brand} class="size-8 rounded-md" />
+													{:else}
+														<span class={cn('flex size-8 shrink-0 items-center justify-center rounded-md', categoryAccent[spec.category])}>
+															<Icon class="size-4" />
+														</span>
+													{/if}
 													<span class="min-w-0 flex-1">
 														<span class="block truncate text-sm font-medium">{spec.label}</span>
 														<span class="text-muted-foreground block truncate text-xs">{spec.description}</span>

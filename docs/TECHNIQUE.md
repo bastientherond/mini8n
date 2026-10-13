@@ -90,6 +90,7 @@ crates/server/          API Rust (axum + sqlx)
   src/auth.rs           inscription, connexion, sessions, mot de passe
   src/workspaces.rs     workspaces, membres, rôles
   src/workflows.rs      stockage des workflows (version optimiste)
+  src/live.rs           collaboration en direct (WebSocket : présence, sauvegardes diffusées)
   src/triggers.rs       activation, webhooks et formulaires publics, exécution à distance
   src/runner.rs         exécution côté serveur (pool de threads, sous-workflows, erreurs)
   src/scheduler.rs      planification et surveillance d'API
@@ -100,10 +101,11 @@ crates/server/          API Rust (axum + sqlx)
   src/integrations/     PostgreSQL / MySQL (sqlx), Oracle (connecteur), fichiers, e-mail, messageries
   src/executions.rs     historique des exécutions
   src/security.rs       anti-CSRF, limitation de débit, IP cliente
-  tests/api.rs          tests d'intégration (PostgreSQL)
+  tests/api.rs          tests d'intégration (PostgreSQL) ; tests/live.rs : WebSocket
 web/                    interface Svelte 5 + Vite + Tailwind 4 + shadcn-svelte
   nginx/                configuration nginx (en-têtes de sécurité, proxy)
   src/lib/api.ts        client API ; session.svelte.ts : compte et workspaces
+  src/lib/live.svelte.ts  collaboration en direct (connexion, présence des autres membres)
   src/lib/router.svelte.ts  routes (#/w/<workspace>/workflows/<id>…)
   src/lib/engine/       worker WASM, client RPC
   src/lib/components/
@@ -222,6 +224,14 @@ lors d'un test dans l'éditeur. Les connexions suivent la même protection SSRF 
 HTTP : pour joindre une base sur un réseau privé, ajoutez-la à `NETWORK_ALLOWLIST`
 (`db.interne,10.20.0.0/16`).
 
+La page « Identifiants » affiche le **logo du service** de chaque identifiant et les **workflows qui
+l'utilisent** (liens vers l'éditeur ; `GET …/credentials` renvoie `usage`, calculé à partir des
+définitions des workflows). Les logos sont définis dans le code (`web/src/lib/brands.ts`,
+`BrandLogo.svelte`) et ne se configurent pas. Pour un webhook de messagerie, le service (Slack,
+Discord, Microsoft Teams, Mattermost, Google Chat) est reconnu d'après l'hôte de l'URL à
+l'enregistrement : seul son nom est exposé dans le résumé, l'URL reste secrète. Les nœuds
+d'intégration portent le même logo sur le canevas et dans la palette.
+
 > Sauvegardez `secrets/credentials_key.txt` : sans elle, les identifiants enregistrés sont illisibles.
 
 ## Nœuds disponibles
@@ -257,16 +267,60 @@ Le canevas est fait maison (`web/src/lib/canvas`, `web/src/lib/components/canvas
   sur une grille construite à partir des nœuds, virages pénalisés), liens parallèles
   écartés en couloirs, petits ponts aux croisements, virages arrondis. Après une
   exécution, les liens prennent la couleur des données et affichent le nombre de lignes.
-- **Ranger** (bouton de la barre d'outils, `Maj + Alt + T`) : nœuds rangés en colonnes
+- **Commandes** (barre en bas à gauche, `CanvasControls.svelte`) : zoom, tout afficher,
+  Ranger, annuler / rétablir, mini-carte (masquable), aide « Gestes et raccourcis ».
+- **Sélection** (`SelectionBar.svelte`) : une barre d'actions flotte au-dessus des nœuds
+  sélectionnés — Paramétrer, Exécuter jusqu'ici, Dupliquer, Désactiver, Supprimer — et
+  s'efface pendant un geste (déplacement, tracé d'un lien, rectangle de sélection).
+- **Ranger** (`Maj + Alt + T`) : nœuds rangés en colonnes
   selon leur profondeur, ordre limitant les croisements (l'entrée A est alimentée par le
   nœud du haut), chaque nœud aligné sur ses voisins, positions sur la grille. Annulable.
 - **Interactions** : glisser le fond (ou molette) pour se déplacer, `Ctrl/⌘ + molette` ou
   pincement pour zoomer, `Maj + glisser` pour sélectionner plusieurs nœuds, `Maj + clic`
   pour ajouter à la sélection, `Alt` pendant un déplacement pour ignorer la grille,
-  tirer depuis un port (ou le lâcher sur un nœud) pour relier — les boucles sont refusées,
+  tirer depuis un port (ou le lâcher sur un nœud) pour relier — les boucles sont refusées ;
+  **lâcher le lien dans le vide** ouvre la liste des nœuds qui peuvent s'y brancher, avec en
+  tête des suggestions selon l'étape voisine (`web/src/lib/canvas/suggest.ts`) : le nœud
+  choisi est créé à cet endroit, déjà relié (une seule étape d'annulation),
   `Suppr` pour supprimer, `⌘/Ctrl + Z` / `Maj + ⌘/Ctrl + Z` pour annuler / rétablir,
   `⌘/Ctrl + A` pour tout sélectionner, `Maj + 1` pour tout afficher.
 - Le routage est testé à part : `npm test` (aucune dépendance, `node --test`).
+
+### Collaboration en direct
+
+Plusieurs membres peuvent travailler sur le même workflow : chacun voit le **curseur** des
+autres (avec leur nom et une couleur), les nœuds qu'ils **sélectionnent**, celui qu'ils
+**paramètrent** (crayon et nom), et les nœuds qu'ils **déplacent**, en temps réel. Les pastilles en
+haut à droite du canevas listent les présents ; un clic centre la vue sur l'un d'eux.
+
+**Exécution partagée** : pendant une exécution, le nœud en cours a un contour dégradé animé,
+les suivants sont « en attente », les liens où circulent les données s'animent et chaque
+résultat (lignes, colonnes, erreur) s'affiche dès que le nœud se termine. Le moteur signale
+le début et la fin de chaque nœud (`Host::node_started` / `node_finished`), et cet état est
+diffusé : tous les membres voient la même exécution au même moment (« Alice exécute… »).
+Les données elles-mêmes restent dans le navigateur de celui qui exécute.
+
+- **Transport** : un WebSocket par workflow ouvert,
+  `GET /api/workspaces/{ws}/workflows/{id}/live` — même origine, cookie de session, traverse
+  nginx et Caddy sans configuration particulière. Le serveur relaie la présence (curseur,
+  sélection, nœud ouvert, déplacement en cours) et la mémorise pour les arrivants ; il ne
+  réémet jamais un message client tel quel (validé, puis renvoyé avec l'identité de l'émetteur).
+- **Modifications** : elles passent toujours par la sauvegarde habituelle (`PUT`, version
+  optimiste) ; chaque nouvelle version est diffusée aux autres clients, qui la **fusionnent**
+  avec leurs modifications non enregistrées (fusion à trois voies par nœud, par lien et
+  pour le nom ; si le même élément a été modifié des deux côtés, la modification locale
+  l'emporte — `web/src/lib/canvas/merge.ts`). Une sauvegarde refusée (409) est fusionnée
+  puis renvoyée automatiquement. L'historique d'annulation est rejoué sur la nouvelle
+  version : annuler ne défait que ses propres modifications.
+- **Sécurité** : `Origin` vérifié à l'ouverture (pas de détournement de WebSocket depuis
+  un autre site), accès réservé aux membres, revérifié chaque minute (session révoquée,
+  membre retiré) et coupé immédiatement au retrait d'un membre ou à la suppression du
+  workflow ; messages de 32 Ko au plus, 40 par seconde, 25 participants par workflow.
+- **Pourquoi pas QUIC / WebTransport** : un navigateur ne peut pas ouvrir de connexion QUIC
+  directe, seulement WebTransport (HTTP/3), qu'aucun des proxys (nginx, Caddy) ne relaie et
+  qui impose HTTPS — y compris en local. Pour quelques dizaines de petits messages par
+  seconde, WebSocket offre la même réactivité. Avec le profil `tls`, la page elle-même est
+  déjà servie en HTTP/3 (QUIC) par Caddy.
 
 ## Expressions
 
@@ -335,7 +389,12 @@ Garde-fous : longueur, profondeur, nombre d'opérations et taille des résultats
 ## Limites actuelles / pistes
 
 - Pas encore de vérification d'e-mail ni de réinitialisation de mot de passe par e-mail.
-- Les limites de débit de l'API sont en mémoire (une seule instance de `server`).
+- Les limites de débit de l'API et les salles de collaboration sont en mémoire (une seule
+  instance de `server` ; plusieurs instances demanderaient un relais commun, ex. PostgreSQL
+  `LISTEN/NOTIFY`).
+- Collaboration : les modifications des autres apparaissent à chaque sauvegarde (moins
+  d'une seconde après), pas frappe par frappe ; le texte d'un même paramètre modifié en
+  même temps n'est pas fusionné caractère par caractère.
 - Le nœud HTTP exécuté dans l'éditeur est soumis au CORS du navigateur (pas côté serveur).
 - Pas encore de déclencheurs e-mail (IMAP) ni flux RSS/XML, ni de connecteurs SQL Server, MongoDB, S3.
 - Le `.wasm` fait ~8 Mo (~1,8 Mo gzip), surtout à cause des noyaux Arrow.

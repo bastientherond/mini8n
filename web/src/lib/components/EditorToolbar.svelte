@@ -9,7 +9,6 @@
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Play from '@lucide/svelte/icons/play';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
-	import WandSparkles from '@lucide/svelte/icons/wand-sparkles';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
@@ -17,11 +16,12 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { toast } from 'svelte-sonner';
 	import { errorMessage } from '$lib/api';
+	import { peerColor } from '$lib/live.svelte';
 	import { router } from '$lib/router.svelte';
 	import { attempt, duplicateWorkflow, exportWorkflow, ui } from '$lib/ui.svelte';
 	import { wf } from '$lib/workflow.svelte';
 
-	let { onrun, onarrange }: { onrun: () => void; onarrange: () => void } = $props();
+	let { onrun }: { onrun: () => void } = $props();
 
 	let serverRunning = $state(false);
 
@@ -78,15 +78,6 @@
 	</span>
 
 	<div class="ml-auto flex items-center gap-2">
-		<Button
-			variant="outline"
-			size="sm"
-			onclick={onarrange}
-			disabled={wf.nodes.length === 0}
-			title="Range et aligne tous les nœuds (Maj + Alt + T)"
-		>
-			<WandSparkles /> Ranger
-		</Button>
 		<label
 			class="hover:bg-accent flex h-8 cursor-pointer items-center gap-2 rounded-md border px-2.5 text-xs font-medium"
 			title="Met en service les déclencheurs automatiques (planification, webhook, formulaire…)"
@@ -101,7 +92,16 @@
 				aria-label="Activer le workflow"
 			/>
 		</label>
-		{#if summary && !wf.running}
+		{#if wf.runOwner}
+			<!-- Exécution lancée par un autre membre, suivie en direct. -->
+			<span
+				class="flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium"
+				style="color: {peerColor(wf.runOwner.color)}; border-color: color-mix(in oklch, {peerColor(wf.runOwner.color)} 40%, transparent);"
+			>
+				<LoaderCircle class="size-3.5 animate-spin" />
+				{wf.runOwner.name} exécute…
+			</span>
+		{:else if summary && !wf.running}
 			{#if summary.ok}
 				<Badge variant="secondary">Succès · {summary.ms.toFixed(0)} ms</Badge>
 			{:else}

@@ -45,13 +45,12 @@ pub struct WorkflowDoc {
     deactivated: Option<String>,
 }
 
-fn valid_id(v: &Value) -> bool {
-    v.as_str().is_some_and(|s| {
-        !s.is_empty()
-            && s.len() <= 64
-            && s.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    })
+/// Identifiant de nœud ou de lien : lettres, chiffres, `-` et `_`.
+pub(crate) fn valid_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Contrôle la forme et la taille d'une définition de workflow.
@@ -81,12 +80,18 @@ fn check_definition(def: &Value) -> AppResult<()> {
                 .and_then(Value::as_f64)
                 .is_some_and(f64::is_finite)
         });
-        if !valid_id(&n["id"]) || !kind.is_some_and(|k| !k.is_empty() && k.len() <= 32) || !pos_ok {
+        if !n["id"].as_str().is_some_and(valid_id)
+            || !kind.is_some_and(|k| !k.is_empty() && k.len() <= 32)
+            || !pos_ok
+        {
             return bad("nœud mal formé");
         }
     }
     for e in edges {
-        if !valid_id(&e["source"]) || !valid_id(&e["target"]) {
+        if ![&e["source"], &e["target"]]
+            .iter()
+            .all(|v| v.as_str().is_some_and(valid_id))
+        {
             return bad("lien mal formé");
         }
     }
@@ -217,6 +222,8 @@ pub async fn update(
     };
     tx.commit().await?;
     let mut doc = fetch(&state, ws, id).await?;
+    // Les autres membres qui ont ce workflow ouvert reçoivent la nouvelle version.
+    state.live.saved(id, user.id, &doc);
     doc.deactivated = deactivated;
     Ok(Json(doc))
 }
@@ -236,6 +243,7 @@ pub async fn delete(
     if n == 0 {
         return Err(AppError::NotFound);
     }
+    state.live.deleted(id);
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -2,6 +2,7 @@
 	// Canevas de workflow fait maison : nœuds positionnés en HTML, liens en SVG routés
 	// autour des nœuds (voir $lib/canvas/router.ts), interactions à la souris, au doigt
 	// et au clavier.
+	import Pencil from '@lucide/svelte/icons/pencil';
 	import Plus from '@lucide/svelte/icons/plus';
 	import Trash2 from '@lucide/svelte/icons/trash-2';
 	import { onMount } from 'svelte';
@@ -10,12 +11,15 @@
 	import { type Point, type Rect, crossings, labelPoint, pathFor, routeEdges } from '$lib/canvas/router';
 	import { Viewport, boundsOf } from '$lib/canvas/viewport.svelte';
 	import { formatCount } from '$lib/icons';
+	import { type Peer, live, peerColor } from '$lib/live.svelte';
+	import { session } from '$lib/session.svelte';
 	import { cn } from '$lib/utils';
-	import { inputHandle, wf, type XYPosition } from '$lib/workflow.svelte';
+	import { inputHandle, wf, type StepNode as Step, type XYPosition } from '$lib/workflow.svelte';
 	import StepNode from '../StepNode.svelte';
 	import CanvasControls from './CanvasControls.svelte';
 	import Minimap from './Minimap.svelte';
 	import NodePicker from './NodePicker.svelte';
+	import SelectionBar from './SelectionBar.svelte';
 
 	let { viewport: vp }: { viewport: Viewport } = $props();
 
@@ -28,6 +32,25 @@
 	let root: HTMLDivElement;
 	let sizes = $state<Record<string, { w: number; h: number }>>({});
 	let spaceDown = $state(false);
+
+	const MINIMAP_KEY = 'mini8n.minimap';
+	let minimap = $state(readMinimap());
+
+	function readMinimap() {
+		try {
+			return localStorage.getItem(MINIMAP_KEY) !== '0';
+		} catch {
+			return true;
+		}
+	}
+
+	$effect(() => {
+		try {
+			localStorage.setItem(MINIMAP_KEY, minimap ? '1' : '0');
+		} catch {
+			// confort uniquement
+		}
+	});
 
 	type Mode =
 		| { kind: 'idle' }
@@ -47,11 +70,19 @@
 
 	// --- Géométrie --------------------------------------------------------
 
+	/** Position affichée : celle que lui donne un autre membre en train de le déplacer
+	 *  (avant sa sauvegarde), sauf si on le déplace soi-même. */
+	function shown(n: Step): XYPosition {
+		if (mode.kind === 'drag' && mode.origins.has(n.id)) return n.position;
+		return live.ghosts.get(n.id) ?? n.position;
+	}
+
 	const rects = $derived(
 		new Map<string, Rect>(
 			wf.nodes.map((n) => {
 				const s = sizes[n.id] ?? DEFAULT_SIZE;
-				return [n.id, { x: n.position.x, y: n.position.y, w: s.w, h: s.h }];
+				const p = shown(n);
+				return [n.id, { x: p.x, y: p.y, w: s.w, h: s.h }];
 			}),
 		),
 	);
@@ -92,6 +123,8 @@
 			const source = wf.results[e.source];
 			const target = wf.results[e.target];
 			const flowed = source?.status === 'success' && !!target && target.status !== 'skipped';
+			// Données en route : la source a fini, la cible attend ou s'exécute.
+			const flowing = wf.runningIds.has(e.target) && !wf.runningIds.has(e.source);
 			const label = labelPoint(points);
 			const key = `${Math.round(label.x / 6)}:${Math.round(label.y / 6)}`;
 			const duplicate = taken.has(key);
@@ -103,6 +136,7 @@
 					end: points[points.length - 1],
 					label,
 					rows: flowed ? source.rows : null,
+					flowing,
 					showRows: flowed && !duplicate,
 				},
 			];
@@ -119,6 +153,12 @@
 			xs.push(mode.pointer.x);
 			ys.push(mode.pointer.y);
 			const start = portPoint(mode.node, mode.port);
+			if (start) xs.push(start.x), ys.push(start.y);
+		}
+		if (picker?.from && picker.at) {
+			xs.push(picker.at.x);
+			ys.push(picker.at.y);
+			const start = portPoint(picker.from.node, picker.from.port);
 			if (start) xs.push(start.x), ys.push(start.y);
 		}
 		if (xs.length === 0) return { x: 0, y: 0, w: 1, h: 1 };
@@ -146,22 +186,61 @@
 		}, 250);
 	}
 
-	// --- Insertion d'un nœud sur un lien (« + ») ----------------------------
+	// --- Choix d'un nœud : insertion sur un lien (« + »), lien lâché dans le vide ----
 
-	let picker = $state<{ edge: string; x: number; y: number } | null>(null);
+	/** `edge` : insertion sur ce lien ; `from` : lien tiré depuis ce port et lâché en `at`. */
+	let picker = $state<{
+		x: number;
+		y: number;
+		edge?: string;
+		from?: { node: string; port: string };
+		at?: Point;
+	} | null>(null);
 
-	function openPicker(e: Event, id: string, at: Point) {
-		e.preventDefault();
-		e.stopPropagation();
-		clearTimeout(leaveTimer);
+	/** Position du sélecteur (pixels écran) sous un point du canevas, sans sortir de la vue. */
+	function pickerPlace(at: Point) {
 		const W = 288;
-		const H = 330;
+		const H = 390;
 		let x = at.x * vp.zoom + vp.x - W / 2;
 		let y = at.y * vp.zoom + vp.y + 20;
 		if (y + H > vp.height - 8) y = at.y * vp.zoom + vp.y - H - 20;
 		x = Math.max(8, Math.min(x, vp.width - W - 8));
 		y = Math.max(8, y);
-		picker = { edge: id, x, y };
+		return { x, y };
+	}
+
+	function openPicker(e: Event, id: string, at: Point) {
+		e.preventDefault();
+		e.stopPropagation();
+		clearTimeout(leaveTimer);
+		picker = { edge: id, ...pickerPlace(at) };
+	}
+
+	const kindOf = (id: string | undefined) => wf.nodes.find((n) => n.id === id)?.data.kind;
+
+	/** Lien lâché dans le vide : ni sur un nœud, ni sur l'interface, et assez loin de son port. */
+	function droppedInVoid(e: PointerEvent, from: { node: string; port: string }): boolean {
+		const el = document.elementFromPoint(e.clientX, e.clientY);
+		if (!el || !root.contains(el) || el.closest('[data-node-id], [data-port], [data-canvas-ui]')) return false;
+		const start = portPoint(from.node, from.port);
+		const p = pointer(e);
+		return !!start && Math.hypot(p.x - start.x, p.y - start.y) * vp.zoom > 30;
+	}
+
+	/** Nouveau nœud au bout du lien lâché, relié au port de départ. */
+	function addFromDrop(from: { node: string; port: string }, at: Point, kind: string) {
+		picker = null;
+		const spec = wf.spec(kind);
+		if (!spec) return;
+		const { w, h } = DEFAULT_SIZE;
+		const forward = from.port === 'out';
+		// Le lien arrive sur la première entrée du nouveau nœud, ou part de sa sortie.
+		const position = forward
+			? { x: snap(at.x + PORT_GAP), y: snap(at.y - h / (Math.max(spec.inputs.length, 1) + 1)) }
+			: { x: snap(at.x - w - PORT_GAP), y: snap(at.y - h / 2) };
+		const link = forward ? { source: from.node } : { target: from.node, input: Number(from.port.replace('in-', '')) || 0 };
+		const id = wf.addLinked(kind, position, link);
+		if (id) wf.openNodeId = id;
 	}
 
 	/** Nœud inséré entre la source et la cible du lien ; les nœuds suivants s'écartent si besoin. */
@@ -210,13 +289,22 @@
 		wf.removeEdge(id);
 	}
 
+	/** Lien en cours de tracé, ou lâché dans le vide en attendant le choix du nœud. */
 	const connectPreview = $derived.by(() => {
-		if (mode.kind !== 'connect') return null;
-		const start = portPoint(mode.node, mode.port);
+		let from: { node: string; port: string };
+		let end: Point;
+		if (mode.kind === 'connect') {
+			from = mode;
+			end = (mode.target ? portPoint(mode.target.node, mode.target.port) : null) ?? mode.pointer;
+		} else if (picker?.from && picker.at) {
+			from = picker.from;
+			end = picker.at;
+		} else {
+			return null;
+		}
+		const start = portPoint(from.node, from.port);
 		if (!start) return null;
-		const target = mode.target ? portPoint(mode.target.node, mode.target.port) : null;
-		const end = target ?? mode.pointer;
-		const [a, b] = mode.port === 'out' ? [start, end] : [end, start];
+		const [a, b] = from.port === 'out' ? [start, end] : [end, start];
 		const dx = Math.max(40, Math.abs(b.x - a.x) / 2);
 		return `M${a.x},${a.y} C${a.x + dx},${a.y} ${b.x - dx},${b.y} ${b.x},${b.y}`;
 	});
@@ -339,7 +427,7 @@
 				ids = [id];
 				wf.setSelection(ids);
 			}
-			const origins = new Map(wf.nodes.filter((n) => ids.includes(n.id)).map((n) => [n.id, { ...n.position }]));
+			const origins = new Map(wf.nodes.filter((n) => ids.includes(n.id)).map((n) => [n.id, { ...shown(n) }]));
 			mode = { kind: 'drag', start: pointer(e), origins, moved: false };
 			return;
 		}
@@ -364,7 +452,18 @@
 	let frame = 0;
 	let pending: PointerEvent | null = null;
 
+	/** Dernière position du pointeur (le curseur partagé suit aussi les déplacements de la vue). */
+	let lastClient: Point | null = null;
+
+	function shareCursor() {
+		if (lastClient) live.cursor(vp.toCanvas(lastClient));
+	}
+
 	function onpointermove(e: PointerEvent) {
+		if (e.pointerType !== 'touch') {
+			lastClient = { x: e.clientX, y: e.clientY };
+			shareCursor();
+		}
 		if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
 		if (pinch && touches.size === 2) {
 			const [a, b] = [...touches.values()];
@@ -409,6 +508,7 @@
 				positions.set(id, free ? { x: o.x + dx, y: o.y + dy } : { x: snap(o.x + dx), y: snap(o.y + dy) });
 			}
 			wf.moveNodes(positions);
+			live.drag(positions);
 		} else if (mode.kind === 'connect') {
 			mode.pointer = p;
 			mode.target = targetAt(e.clientX, e.clientY, mode);
@@ -429,11 +529,21 @@
 		}
 		const m = mode;
 		mode = { kind: 'idle' };
+		if (m.kind === 'drag' && m.moved) {
+			live.drag(new Map(wf.nodes.filter((n) => m.origins.has(n.id)).map((n) => [n.id, n.position])), true);
+		}
 		if (m.kind === 'pan' && !m.moved && m.onBackground) {
 			wf.setSelection([]);
 		} else if (m.kind === 'connect') {
 			const t = targetAt(e.clientX, e.clientY, m);
-			if (!t) return;
+			if (!t) {
+				// Lâché dans le vide : choix du nœud à créer au bout du lien.
+				if (droppedInVoid(e, m)) {
+					const at = pointer(e);
+					picker = { from: { node: m.node, port: m.port }, at, ...pickerPlace(at) };
+				}
+				return;
+			}
 			const [source, target, port] = m.port === 'out' ? [m.node, t.node, t.port] : [t.node, m.node, m.port];
 			const error = wf.connect(source, target, Number(port.replace('in-', '')) || 0);
 			if (error) toast.error(error);
@@ -461,6 +571,7 @@
 			const unit = e.deltaMode === 1 ? 16 : 1;
 			vp.panBy(-e.deltaX * unit, -e.deltaY * unit);
 		}
+		shareCursor();
 	}
 
 	// --- Clavier -------------------------------------------------------------
@@ -546,6 +657,43 @@
 		toast.success('Nœuds rangés', { action: { label: 'Annuler', onClick: () => wf.undo() } });
 	}
 
+	// --- Autres membres -------------------------------------------------------
+
+	/** Nœuds sélectionnés ou en cours de paramétrage par d'autres membres. */
+	const peerMarks = $derived.by(() => {
+		const out = new Map<string, Peer[]>();
+		for (const p of live.peers) {
+			for (const id of new Set([...p.selection, ...(p.focus ? [p.focus] : [])])) {
+				out.set(id, [...(out.get(id) ?? []), p]);
+			}
+		}
+		return out;
+	});
+
+	/** Membres en train de paramétrer chaque nœud (étiquette avec leur nom). */
+	const editors = $derived.by(() => {
+		const out = new Map<string, Peer[]>();
+		for (const p of live.peers) if (p.focus) out.set(p.focus, [...(out.get(p.focus) ?? []), p]);
+		return out;
+	});
+
+	const initials = (name: string) =>
+		name
+			.split(/\s+/)
+			.filter(Boolean)
+			.slice(0, 2)
+			.map((w) => w[0]!.toUpperCase())
+			.join('') || '?';
+
+	const peerName = (p: Peer) => (p.user === session.user?.id ? `${p.name} (autre onglet)` : p.name);
+
+	/** Centre la vue sur ce que fait un membre : son curseur, sinon sa sélection. */
+	function follow(p: Peer) {
+		const b = boundsOf(p.selection.flatMap((id) => rects.get(id) ?? []));
+		const target = p.cursor ?? (b && { x: b.x + b.w / 2, y: b.y + b.h / 2 });
+		if (target) vp.centerOn(target);
+	}
+
 	// --- Mesures ---------------------------------------------------------------
 
 	function measure(el: HTMLElement, id: string) {
@@ -581,6 +729,8 @@
 
 	const box = $derived(mode.kind === 'box' ? normalize(mode.start, mode.current) : null);
 	const connectingFromOutput = $derived(mode.kind === 'connect' && mode.port === 'out');
+	/** Geste en cours : la barre d'actions de la sélection s'efface pour ne pas gêner. */
+	const gesturing = $derived(mode.kind === 'connect' || mode.kind === 'box' || (mode.kind === 'drag' && mode.moved));
 	const dotSize = $derived(GRID * vp.zoom);
 </script>
 
@@ -594,7 +744,6 @@
 		(spaceDown || mode.kind === 'pan') && 'cursor-grab',
 		mode.kind === 'pan' && mode.moved && 'cursor-grabbing',
 		mode.kind === 'connect' && 'cursor-crosshair',
-		wf.running && 'mini8n-running',
 	)}
 	style="background-size: {dotSize}px {dotSize}px; background-position: {vp.x}px {vp.y}px;"
 	tabindex="0"
@@ -604,6 +753,11 @@
 	{onpointermove}
 	{onpointerup}
 	onpointercancel={onpointerup}
+	onpointerleave={(e) => {
+		if (e.pointerType === 'touch' || root.hasPointerCapture(e.pointerId)) return;
+		lastClient = null;
+		live.cursor(null);
+	}}
 	oncontextmenu={(e) => mode.kind !== 'idle' && e.preventDefault()}
 >
 	<div class="absolute top-0 left-0 origin-top-left" style="transform: translate({vp.x}px, {vp.y}px) scale({vp.zoom});">
@@ -619,7 +773,13 @@
 			{#each edgeViews as v (v.edge.id)}
 				{@const active = v.edge.selected || hoveredEdge === v.edge.id}
 				<g
-					class={cn('mini8n-edge', v.edge.selected && 'is-selected', active && 'is-active', v.rows !== null && 'has-data')}
+					class={cn(
+						'mini8n-edge',
+						v.edge.selected && 'is-selected',
+						active && 'is-active',
+						v.rows !== null && 'has-data',
+						v.flowing && 'is-flowing',
+					)}
 					data-edge={v.edge.id}
 				>
 					<!-- Zone de clic élargie -->
@@ -693,9 +853,10 @@
 		<!-- Nœuds -->
 		{#each wf.nodes as node (node.id)}
 			{@const hover = mode.kind === 'connect' && mode.target?.node === node.id ? mode.target.port : null}
+			{@const at = rects.get(node.id) ?? node.position}
 			<div
-				class="absolute top-0 left-0"
-				style="transform: translate({node.position.x}px, {node.position.y}px);"
+				class={cn('absolute top-0 left-0', at !== node.position && live.ghosts.has(node.id) && 'transition-transform duration-75 ease-linear')}
+				style="transform: translate({at.x}px, {at.y}px);"
 				data-node-id={node.id}
 				use:measure={node.id}
 			>
@@ -708,6 +869,57 @@
 				/>
 			</div>
 		{/each}
+
+		<!-- Sélections des autres membres -->
+		{#each [...peerMarks] as [id, peers] (id)}
+			{@const r = rects.get(id)}
+			{@const node = wf.nodes.find((n) => n.id === id)}
+			{#if r && node}
+				{@const left = wf.isTrigger(node.data.kind) ? 34 : 16}
+				{#each peers as p, i (p.id)}
+					{@const pad = 5 + i * 4}
+					<!-- Sélection : contour fin ; paramétrage : contour plein et étiquette. -->
+					<div
+						class="pointer-events-none absolute"
+						style="left: {r.x - pad}px; top: {r.y - pad}px; width: {r.w + pad * 2}px; height: {r.h + pad * 2}px; border-radius: {left + pad}px {16 + pad}px {16 + pad}px {left + pad}px; box-shadow: 0 0 0 {p.focus === id ? 2 : 1.5}px {peerColor(p.color)}; opacity: {p.focus === id ? 1 : 0.6};"
+					></div>
+				{/each}
+				{@const editing = editors.get(id) ?? []}
+				{#if editing.length > 0}
+					<div class="pointer-events-none absolute flex -translate-y-full gap-1" style="left: {r.x}px; top: {r.y - 8 - peers.length * 4}px;">
+						{#each editing as p (p.id)}
+							<span
+								class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] leading-tight font-medium whitespace-nowrap text-white shadow-sm"
+								style="background: {peerColor(p.color)};"
+							>
+								<Pencil class="size-3" />
+								{peerName(p)}
+							</span>
+						{/each}
+					</div>
+				{/if}
+			{/if}
+		{/each}
+
+		<!-- Curseurs des autres membres (taille constante quel que soit le zoom) -->
+		{#each live.peers as p (p.id)}
+			{#if p.cursor}
+				<div
+					class="pointer-events-none absolute top-0 left-0 origin-top-left transition-transform duration-75 ease-linear"
+					style="transform: translate({p.cursor.x}px, {p.cursor.y}px) scale({1 / vp.zoom});"
+				>
+					<svg width="18" height="20" viewBox="0 0 18 20" class="drop-shadow-sm" aria-hidden="true">
+						<path d="M1.5 1.5v14.2l4-3.6 2.9 6.4 2.6-1.2-2.9-6.3h5.6z" fill={peerColor(p.color)} stroke="white" stroke-width="1.5" stroke-linejoin="round" />
+					</svg>
+					<span
+						class="absolute top-4 left-3.5 rounded-full px-2 py-0.5 text-[11px] font-medium whitespace-nowrap text-white shadow-sm"
+						style="background: {peerColor(p.color)};"
+					>
+						{peerName(p)}
+					</span>
+				</div>
+			{/if}
+		{/each}
 	</div>
 
 	{#if box}
@@ -719,9 +931,53 @@
 
 	{#if picker}
 		{@const p = picker}
-		<NodePicker x={p.x} y={p.y} onpick={(kind) => insertOnEdge(p.edge, kind)} onclose={() => (picker = null)} />
+		{#if p.from && p.at}
+			{@const from = p.from}
+			{@const at = p.at}
+			<NodePicker
+				x={p.x}
+				y={p.y}
+				neighbour={kindOf(from.node)}
+				direction={from.port === 'out' ? 'after' : 'before'}
+				title={from.port === 'out' ? 'Ajouter une étape' : 'Ajouter une étape avant'}
+				onpick={(kind) => addFromDrop(from, at, kind)}
+				onclose={() => (picker = null)}
+			/>
+		{:else if p.edge}
+			{@const edge = p.edge}
+			<NodePicker
+				x={p.x}
+				y={p.y}
+				neighbour={kindOf(wf.edges.find((x) => x.id === edge)?.source)}
+				onpick={(kind) => insertOnEdge(edge, kind)}
+				onclose={() => (picker = null)}
+			/>
+		{/if}
 	{/if}
 
-	<CanvasControls viewport={vp} onfit={fit} onarrange={arrange} />
-	<Minimap viewport={vp} rects={rects} />
+	{#if live.peers.length > 0}
+		<div class="absolute top-3 right-3 z-10 flex items-center" data-canvas-ui>
+			{#each live.peers as p (p.id)}
+				<button
+					type="button"
+					class="ring-background -ml-1.5 flex size-8 items-center justify-center rounded-full text-[11px] font-semibold text-white shadow-sm ring-2 transition-transform first:ml-0 hover:z-10 hover:scale-110"
+					style="background: {peerColor(p.color)};"
+					title="{peerName(p)} — aller à sa position"
+					aria-label="Aller à la position de {peerName(p)}"
+					onclick={() => follow(p)}
+				>
+					{initials(p.name)}
+				</button>
+			{/each}
+		</div>
+	{/if}
+
+	{#if !gesturing && !picker}
+		<SelectionBar viewport={vp} {rects} />
+	{/if}
+
+	<CanvasControls viewport={vp} onfit={fit} onarrange={arrange} bind:minimap />
+	{#if minimap}
+		<Minimap viewport={vp} rects={rects} />
+	{/if}
 </div>

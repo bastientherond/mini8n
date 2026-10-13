@@ -157,20 +157,14 @@ services:
     mem_limit: 256m
 
 networks:
-  # Base de données : joignable uniquement par l'API, sans accès Internet.
   data:
     internal: true
-  # API : joignable uniquement par nginx, sans accès Internet.
   backend:
     internal: true
-  # Exposition HTTP directe (port publié).
   edge: {}
-  # Accès sortant de l'API et des connecteurs (requêtes des workflows).
   egress: {}
-  # API ↔ connecteurs (Oracle).
   connectors:
     internal: true
-  # Reverse proxy TLS → nginx (adresse fixe de confiance pour l'IP cliente).
   tls:
     ipam:
       config:

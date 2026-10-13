@@ -18,7 +18,7 @@ base64 = "0.22.1"
 calamine = { version = "0.36", features = ["chrono"] }
 rust_xlsxwriter = "0.99"
 lettre = { version = "0.11.23", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls", "ring", "webpki-roots"] }
-axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio", "tracing"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "ws"] }
 tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tower = { version = "0.5", default-features = false, features = ["limit", "timeout", "util"] }
 tower-http = { version = "0.6.8", features = ["limit", "timeout", "trace", "set-header", "catch-panic", "request-id"] }
@@ -37,3 +37,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Client WebSocket des tests de collaboration (déjà utilisé par axum côté serveur).
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

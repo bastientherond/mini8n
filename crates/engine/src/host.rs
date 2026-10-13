@@ -10,7 +10,7 @@ use std::pin::Pin;
 use arrow::array::RecordBatch;
 
 use crate::error::{Result, fail};
-use crate::workflow::Node;
+use crate::workflow::{Node, NodeResult};
 
 /// Future non `Send` (compatible WebAssembly).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -58,6 +58,12 @@ pub trait Host {
             fail("L'appel d'un autre workflow n'est pas disponible dans cet environnement")
         })
     }
+
+    /// Progression : un nœud commence (affichage de l'exécution en cours).
+    fn node_started(&self, _node_id: &str) {}
+
+    /// Progression : un nœud est terminé.
+    fn node_finished(&self, _node_id: &str, _result: &NodeResult) {}
 }
 
 /// Hôte minimal (tests, exécution hors ligne).

@@ -109,6 +109,15 @@ export interface CredentialKind {
 	fields: CredentialField[];
 }
 
+/** Un nœud d'un workflow qui référence un identifiant. */
+export interface CredentialUsage {
+	workflowId: string;
+	workflowName: string;
+	nodeId: string;
+	nodeName: string;
+	nodeKind: string;
+}
+
 export interface CredentialInfo {
 	id: string;
 	name: string;
@@ -116,6 +125,8 @@ export interface CredentialInfo {
 	/** Champs non secrets ; `<champ>_defini` indique si un secret est enregistré. */
 	summary: Record<string, unknown>;
 	updatedAt: string;
+	/** Nœuds qui utilisent cet identifiant (renseigné par la liste). */
+	usage?: CredentialUsage[];
 }
 
 export interface FileInfo {

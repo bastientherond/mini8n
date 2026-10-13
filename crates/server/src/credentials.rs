@@ -228,7 +228,36 @@ fn summary(kind: &Kind, data: &Map<String, Value>) -> Value {
             .is_some_and(|v| !v.is_empty());
         s.insert(format!("{}_defini", f.name), json!(set));
     }
+    if kind.kind == "chat_webhook" {
+        // Seul le nom du service est exposé (pour son logo) ; l'URL reste secrète.
+        let service = data.get("url").and_then(Value::as_str).and_then(chat_service);
+        s.insert("service".into(), json!(service));
+    }
     Value::Object(s)
+}
+
+/// Service de messagerie reconnu d'après l'hôte de l'URL du webhook (même règle côté
+/// interface, `web/src/lib/brands.ts`).
+pub fn chat_service(url: &str) -> Option<&'static str> {
+    let rest = url.strip_prefix("https://")?;
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    // Sans identifiants (`user:pass@`) ni port.
+    let host = host.rsplit('@').next().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+    let ends = |suffix: &str| host == suffix || host.ends_with(&format!(".{suffix}"));
+    if ends("slack.com") {
+        Some("Slack")
+    } else if ends("discord.com") || ends("discordapp.com") {
+        Some("Discord")
+    } else if ends("webhook.office.com") || ends("logic.azure.com") || ends("powerautomate.com") || ends("office365.com") {
+        Some("Microsoft Teams")
+    } else if ends("chat.googleapis.com") {
+        Some("Google Chat")
+    } else if path.starts_with("hooks/") || host.contains("mattermost") {
+        Some("Mattermost")
+    } else {
+        None
+    }
 }
 
 /// Charge et déchiffre un identifiant du workspace (vérifie son type).
@@ -276,6 +305,51 @@ pub struct CredentialInfo {
     kind: String,
     summary: SqlJson<Value>,
     updated_at: DateTime<Utc>,
+    /// Nœuds des workflows du workspace qui utilisent cet identifiant (liste seulement).
+    #[sqlx(skip)]
+    usage: Vec<CredentialUsage>,
+}
+
+/// Un nœud d'un workflow qui référence un identifiant.
+#[derive(Serialize, sqlx::FromRow, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialUsage {
+    workflow_id: Uuid,
+    workflow_name: String,
+    node_id: String,
+    node_name: String,
+    node_kind: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct UsageRow {
+    credential: String,
+    #[sqlx(flatten)]
+    usage: CredentialUsage,
+}
+
+/// Références aux identifiants dans les définitions des workflows du workspace, par identifiant.
+async fn usages(db: &PgPool, ws: Uuid) -> AppResult<std::collections::HashMap<String, Vec<CredentialUsage>>> {
+    let rows: Vec<UsageRow> = sqlx::query_as(
+        "SELECT n->'data'->'params'->>'credential' AS credential,
+                w.id AS workflow_id, w.name AS workflow_name,
+                n->>'id' AS node_id,
+                COALESCE(n->'data'->>'name', '') AS node_name,
+                COALESCE(n->'data'->>'kind', '') AS node_kind
+         FROM workflows w, jsonb_array_elements(w.definition->'nodes') n
+         WHERE w.workspace_id = $1
+           AND jsonb_typeof(w.definition->'nodes') = 'array'
+           AND COALESCE(n->'data'->'params'->>'credential', '') <> ''
+         ORDER BY w.name, node_name",
+    )
+    .bind(ws)
+    .fetch_all(db)
+    .await?;
+    let mut out: std::collections::HashMap<String, Vec<CredentialUsage>> = std::collections::HashMap::new();
+    for r in rows {
+        out.entry(r.credential).or_default().push(r.usage);
+    }
+    Ok(out)
 }
 
 async fn info(db: &PgPool, ws: Uuid, id: Uuid) -> AppResult<CredentialInfo> {
@@ -293,11 +367,18 @@ pub async fn list(
     Path(ws): Path<Uuid>,
 ) -> AppResult<Json<Vec<CredentialInfo>>> {
     require_member(&state.db, ws, user.id).await?;
+    let mut usage = usages(&state.db, ws).await?;
     Ok(Json(
-        sqlx::query_as("SELECT id, name, kind, summary, updated_at FROM credentials WHERE workspace_id = $1 ORDER BY name")
+        sqlx::query_as::<_, CredentialInfo>("SELECT id, name, kind, summary, updated_at FROM credentials WHERE workspace_id = $1 ORDER BY name")
             .bind(ws)
             .fetch_all(&state.db)
-            .await?,
+            .await?
+            .into_iter()
+            .map(|mut c| {
+                c.usage = usage.remove(&c.id.to_string()).unwrap_or_default();
+                c
+            })
+            .collect(),
     ))
 }
 
@@ -482,5 +563,27 @@ mod tests {
         );
         let chat = kind("chat_webhook").unwrap();
         assert!(normalize(&chat, &obj(json!({"url": "http://insecure"})), None).is_err());
+    }
+
+    #[test]
+    fn chat_service_is_detected_from_the_webhook_host() {
+        assert_eq!(chat_service("https://hooks.slack.com/services/T0/B0/x"), Some("Slack"));
+        assert_eq!(chat_service("https://discord.com/api/webhooks/1/abc"), Some("Discord"));
+        assert_eq!(chat_service("https://discordapp.com/api/webhooks/1/abc"), Some("Discord"));
+        assert_eq!(chat_service("https://contoso.webhook.office.com/webhookb2/x"), Some("Microsoft Teams"));
+        assert_eq!(chat_service("https://prod-12.westeurope.logic.azure.com:443/workflows/x"), Some("Microsoft Teams"));
+        assert_eq!(chat_service("https://chat.googleapis.com/v1/spaces/X/messages?key=k"), Some("Google Chat"));
+        assert_eq!(chat_service("https://chat.exemple.com/hooks/abc"), Some("Mattermost"));
+        assert_eq!(chat_service("https://exemple.com/autre"), None);
+        assert_eq!(chat_service("http://hooks.slack.com/x"), None);
+        // Un hôte qui imite un domaine connu n'est pas reconnu.
+        assert_eq!(chat_service("https://hooks.slack.com.evil.example/x"), None);
+
+        let chat = kind("chat_webhook").unwrap();
+        let data = obj(json!({"url": "https://hooks.slack.com/services/T0/B0/x"}));
+        let s = summary(&chat, &data);
+        assert_eq!(s["service"], "Slack");
+        assert!(s.get("url").is_none());
+        assert_eq!(s["url_defini"], true);
     }
 }

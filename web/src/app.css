@@ -216,11 +216,65 @@
 	stroke-dasharray: 6 5;
 }
 
-/* Liens animés pendant une exécution */
-.mini8n-running .mini8n-edge-path {
+/* Liens où circulent les données pendant une exécution (source terminée, cible en cours ou en attente) */
+.mini8n-edge.is-flowing .mini8n-edge-path {
 	stroke: var(--primary);
 	stroke-dasharray: 6 6;
 	animation: mini8n-flow 0.6s linear infinite;
+}
+.mini8n-edge.is-flowing .mini8n-edge-arrow {
+	fill: var(--primary);
+}
+
+/* Nœud en cours d'exécution : contour dégradé qui tourne, et halo */
+@property --mini8n-angle {
+	syntax: '<angle>';
+	initial-value: 0deg;
+	inherits: false;
+}
+.mini8n-node-running {
+	border-color: transparent;
+	box-shadow: 0 0 0 4px color-mix(in oklch, var(--primary) 14%, transparent), 0 8px 24px -8px color-mix(in oklch, var(--primary) 45%, transparent);
+	animation: mini8n-glow 1.6s ease-in-out infinite;
+}
+.mini8n-node-running::before {
+	content: '';
+	position: absolute;
+	inset: -2px;
+	padding: 2px;
+	border-radius: inherit;
+	background: conic-gradient(
+		from var(--mini8n-angle),
+		var(--primary),
+		oklch(0.72 0.17 200),
+		oklch(0.7 0.22 330),
+		var(--primary)
+	);
+	-webkit-mask:
+		linear-gradient(#000 0 0) content-box,
+		linear-gradient(#000 0 0);
+	-webkit-mask-composite: xor;
+	mask-composite: exclude;
+	animation: mini8n-spin 1.4s linear infinite;
+	pointer-events: none;
+	z-index: 1;
+}
+@keyframes mini8n-spin {
+	to {
+		--mini8n-angle: 360deg;
+	}
+}
+@keyframes mini8n-glow {
+	50% {
+		box-shadow: 0 0 0 7px color-mix(in oklch, var(--primary) 8%, transparent), 0 8px 28px -6px color-mix(in oklch, var(--primary) 60%, transparent);
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.mini8n-node-running,
+	.mini8n-node-running::before,
+	.mini8n-edge.is-flowing .mini8n-edge-path {
+		animation: none;
+	}
 }
 
 @keyframes mini8n-flow {

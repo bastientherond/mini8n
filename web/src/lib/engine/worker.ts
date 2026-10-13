@@ -4,7 +4,10 @@
 import init, * as engine from './pkg/mini8n_engine.js';
 import wasmUrl from './pkg/mini8n_engine_bg.wasm?url';
 import { toEngineWorkflow } from './convert';
-import type { RunReport } from './types';
+import type { NodeResult, RunReport } from './types';
+
+/** Progression d'une exécution, envoyée avant la réponse finale. */
+export type Progress = { kind: 'start'; node: string } | { kind: 'end'; node: string; result: NodeResult };
 
 export type Request =
 	| { id: number; method: 'catalog' }
@@ -99,7 +102,15 @@ self.onmessage = async (event: MessageEvent<Request>) => {
 				result = engine.version();
 				break;
 			case 'run': {
-				const out = await engine.runWorkflow(req.workflow, req.target ?? null, null, hostFor(req.workspaceId, 0));
+				const host = {
+					...hostFor(req.workspaceId, 0),
+					onProgress: (kind: 'start' | 'end', node: string, result?: string) => {
+						const progress: Progress =
+							kind === 'start' ? { kind, node } : { kind, node, result: JSON.parse(result!) as NodeResult };
+						self.postMessage({ id: req.id, progress });
+					},
+				};
+				const out = await engine.runWorkflow(req.workflow, req.target ?? null, null, host);
 				const data = out.data as Record<string, Uint8Array>;
 				transfer = Object.values(data).map((d) => d.buffer as ArrayBuffer);
 				result = { report: JSON.parse(out.report), data };

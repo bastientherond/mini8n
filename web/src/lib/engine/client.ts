@@ -2,9 +2,16 @@
 // Si le moteur plante ou dépasse le délai imparti, le Worker est recréé.
 
 import type { EngineWorkflow, ExprDoc, NodeSpec, Preview, RunOutput, Trial, TrialContext } from './types';
-import type { Request } from './worker';
+import type { Progress, Request } from './worker';
 
-type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> };
+export type { Progress };
+
+type Pending = {
+	resolve: (v: unknown) => void;
+	reject: (e: Error) => void;
+	timer: ReturnType<typeof setTimeout>;
+	onProgress?: (p: Progress) => void;
+};
 
 // Distribue une requête sans son identifiant.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -18,10 +25,14 @@ let worker = spawn();
 
 function spawn(): Worker {
 	const w = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module', name: 'mini8n-engine' });
-	w.onmessage = (event: MessageEvent<{ id: number; ok: boolean; result?: unknown; error?: string }>) => {
-		const { id, ok, result, error } = event.data;
+	w.onmessage = (event: MessageEvent<{ id: number; ok: boolean; result?: unknown; error?: string; progress?: Progress }>) => {
+		const { id, ok, result, error, progress } = event.data;
 		const p = pending.get(id);
 		if (!p) return;
+		if (progress) {
+			p.onProgress?.(progress);
+			return;
+		}
 		clearTimeout(p.timer);
 		pending.delete(id);
 		if (ok) p.resolve(result);
@@ -45,13 +56,17 @@ function restart(reason: Error) {
 	worker = spawn();
 }
 
-function call<T>(req: DistributiveOmit<Request, 'id'>, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
+function call<T>(
+	req: DistributiveOmit<Request, 'id'>,
+	timeoutMs = CALL_TIMEOUT_MS,
+	onProgress?: (p: Progress) => void,
+): Promise<T> {
 	const id = ++seq;
 	return new Promise<T>((resolve, reject) => {
 		const timer = setTimeout(() => {
 			restart(new Error(`Délai dépassé (${Math.round(timeoutMs / 1000)} s) : exécution interrompue`));
 		}, timeoutMs);
-		pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
+		pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer, onProgress });
 		worker.postMessage({ ...req, id });
 	});
 }
@@ -99,8 +114,9 @@ async function tryExpression(src: string, template: boolean, ctx: TrialContext):
 export const engine = {
 	catalog: () => call<NodeSpec[]>({ method: 'catalog' }),
 	version: () => call<string>({ method: 'version' }),
-	run: (workflow: EngineWorkflow, target?: string, workspaceId?: string) =>
-		call<RunOutput>({ method: 'run', workflow: JSON.stringify(workflow), target, workspaceId }, RUN_TIMEOUT_MS),
+	/** `onProgress` : début et fin de chaque nœud, au fil de l'exécution. */
+	run: (workflow: EngineWorkflow, target?: string, workspaceId?: string, onProgress?: (p: Progress) => void) =>
+		call<RunOutput>({ method: 'run', workflow: JSON.stringify(workflow), target, workspaceId }, RUN_TIMEOUT_MS, onProgress),
 	preview: (bytes: Uint8Array, offset: number, limit: number) =>
 		call<Preview>({ method: 'preview', bytes, offset, limit }),
 	toCsv: (bytes: Uint8Array) => call<string>({ method: 'csv', bytes }),
