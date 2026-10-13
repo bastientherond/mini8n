@@ -6,6 +6,7 @@ import { ApiError, api, errorMessage, type TriggerInfo, type WorkflowDoc, type W
 import { engine } from './engine/client';
 import { newToken, toEngineWorkflow } from './engine/convert';
 import type { EngineWorkflow, NodeResult, NodeSpec, RunReport } from './engine/types';
+import { removeNodesKeepingLinks } from './canvas/graph';
 import { sanitizeWorkflow } from './sanitize';
 
 export type StepData = {
@@ -181,10 +182,20 @@ class WorkflowState {
 		this.updateData(id, { params: { ...node.data.params, [name]: value } });
 	}
 
+	/** Lien recréé à la suppression d'un nœud intermédiaire. */
+	private bridgeEdge = (source: string, target: string, targetHandle: string): Edge => ({
+		id: `e-${uid()}`,
+		source,
+		target,
+		sourceHandle: 'out',
+		targetHandle,
+	});
+
+	/** Supprime un nœud ; ses voisins restent reliés (a → b → c devient a → c). */
 	removeNode(id: string) {
 		this.checkpoint();
 		this.nodes = this.nodes.filter((n) => n.id !== id);
-		this.edges = this.edges.filter((e) => e.source !== id && e.target !== id);
+		this.edges = removeNodesKeepingLinks(this.edges, [id], this.bridgeEdge);
 	}
 
 	// --- Graphe : sélection, liens, annulation ------------------------------
@@ -291,9 +302,15 @@ class WorkflowState {
 		const edges = this.edges.filter((e) => e.selected || nodes.has(e.source) || nodes.has(e.target));
 		if (nodes.size === 0 && edges.length === 0) return 0;
 		this.checkpoint();
-		const gone = new Set(edges.map((e) => e.id));
+		// Liens sélectionnés supprimés d'abord ; puis les nœuds, en reliant leurs voisins.
+		const selectedEdges = this.edges.filter((e) => e.selected && !nodes.has(e.source) && !nodes.has(e.target));
+		const gone = new Set(selectedEdges.map((e) => e.id));
 		this.nodes = this.nodes.filter((n) => !nodes.has(n.id));
-		this.edges = this.edges.filter((e) => !gone.has(e.id));
+		this.edges = removeNodesKeepingLinks(
+			this.edges.filter((e) => !gone.has(e.id)),
+			nodes,
+			this.bridgeEdge,
+		);
 		return nodes.size + gone.size;
 	}
 
