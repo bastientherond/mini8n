@@ -137,9 +137,26 @@ impl NetPolicy {
         addrs
             .into_iter()
             .find(|a| self.allows(host, a.ip()))
-            .ok_or_else(|| {
-                format!("adresse non autorisée pour « {host} » (réseau privé : ajoutez-le à NETWORK_ALLOWLIST)")
-            })
+            .ok_or_else(|| denied_message(host))
+    }
+}
+
+/// Message d'erreur d'une adresse refusée, avec le conseil adapté.
+pub fn denied_message(host: &str) -> String {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let loopback = h == "localhost"
+        || h.ends_with(".localhost")
+        || h.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    if loopback {
+        format!(
+            "« {host} » désigne le serveur mini8n lui-même (il tourne dans un conteneur), pas votre ordinateur : \
+             pour une base installée sur votre machine, utilisez l'hôte « host.docker.internal » \
+             et ajoutez-le à NETWORK_ALLOWLIST"
+        )
+    } else {
+        format!(
+            "adresse non autorisée pour « {host} » (réseau privé : ajoutez-le à NETWORK_ALLOWLIST)"
+        )
     }
 }
 
@@ -334,6 +351,13 @@ mod tests {
         assert!(p.allows("x", "192.168.1.7".parse().unwrap()));
         assert!(!p.allows("x", "192.168.1.8".parse().unwrap()));
         assert!(p.allows("x", "8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn localhost_gets_docker_advice() {
+        assert!(denied_message("localhost").contains("host.docker.internal"));
+        assert!(denied_message("127.0.0.1").contains("host.docker.internal"));
+        assert!(!denied_message("10.0.0.5").contains("host.docker.internal"));
     }
 
     #[tokio::test]
